@@ -187,7 +187,7 @@ module CountingSemaphore
 
       lease_key = acquire_lease(token_count, timeout_seconds: timeout_seconds)
       begin
-        @logger.debug "🚦Leased #{token_count} tokens with lease #{lease_key}"
+        @logger.debug { "Leased #{token_count} tokens with lease #{lease_key}" }
         yield
       ensure
         release_lease(lease_key, token_count)
@@ -257,7 +257,7 @@ module CountingSemaphore
       end
     rescue Redis::CommandError => e
       if e.message.include?("NOSCRIPT")
-        @logger.debug "🚦Script not found, using EVAL: #{e.message}"
+        @logger.debug { "Script not found, using EVAL: #{e.message}" }
         # Fall back to EVAL with the script body
         with_redis do |redis|
           redis.eval(script_body, keys: keys, argv: argv)
@@ -292,14 +292,14 @@ module CountingSemaphore
       # BLPOP with timeout 0 blocks forever, so we need at least a small positive timeout
       minimum_timeout = 0.1
       if remaining_timeout <= minimum_timeout
-        @logger.debug "🚦Remaining timeout (#{remaining_timeout}s) too small, not waiting"
+        @logger.debug { "Remaining timeout (#{remaining_timeout}s) too small, not waiting" }
         return nil
       end
 
       # Block with timeout (longer than lease expiration to handle stale leases)
       # But don't exceed the remaining timeout
       timeout = [@lease_expiration_seconds + 2, remaining_timeout].min
-      @logger.debug "🚦Unable to lease #{token_count}, waiting for signals (timeout: #{timeout}s)"
+      @logger.debug { "Unable to lease #{token_count}, waiting for signals (timeout: #{timeout}s)" }
 
       with_redis { |redis| redis.blpop("#{@namespace}:waiting_queue", timeout: timeout.to_f) }
 
@@ -310,7 +310,7 @@ module CountingSemaphore
       end
 
       # If still can't acquire, return nil to continue the loop in acquire_lease
-      @logger.debug "🚦Still unable to lease #{token_count} after signal/timeout, continuing to wait"
+      @logger.debug { "Still unable to lease #{token_count} after signal/timeout, continuing to wait" }
       nil
     end
 
@@ -335,10 +335,10 @@ module CountingSemaphore
       if success == 1
         # Extract just the lease ID from the full key for return value
         lease_id = full_lease_key.split(":").last
-        @logger.debug "🚦Acquired lease #{lease_id}, current usage: #{current_usage}/#{@capacity}"
+        @logger.debug { "Acquired lease #{lease_id}, current usage: #{current_usage}/#{@capacity}" }
         lease_id
       else
-        @logger.debug "🚦No capacity available, current usage: #{current_usage}/#{@capacity}"
+        @logger.debug { "No capacity available, current usage: #{current_usage}/#{@capacity}" }
         nil
       end
     end
@@ -360,7 +360,7 @@ module CountingSemaphore
         ]
       )
 
-      @logger.debug "🚦Returned #{token_count} leased tokens (lease: #{lease_key}) and signaled waiting clients"
+      @logger.debug { "Returned #{token_count} leased tokens (lease: #{lease_key}) and signaled waiting clients" }
     end
 
     def get_current_usage

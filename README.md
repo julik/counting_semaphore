@@ -9,7 +9,7 @@ A counting semaphore implementation for Ruby with local and distributed (Redis) 
 
 ## What is it for?
 
-When you have a metered and limited resource that only supports a certain number of simultaneous operations you need a [semaphore](https://en.wikipedia.org/wiki/Semaphore_(programming)) primitive. In Ruby, a semaphore usually controls access to "one whole resource":
+When you have a _metered and limited_ resource that only supports a certain number of simultaneous operations you need a [semaphore](https://en.wikipedia.org/wiki/Semaphore_(programming)) primitive. In Ruby, most semaphores usually controls access "one whole resource":
 
 ```ruby
 sem = Semaphore.new
@@ -18,7 +18,7 @@ sem.with_lease do
 end
 ```
 
-This is well covered - for example - by POSIX semaphores if you are within one machine, or by the venerable [redis-semaphore](https://github.com/dv/redis-semaphore)
+This is well covered - for example - by POSIX semaphores if you are within one machine, and is known as a _binary semaphore_ (it is either "open" or "closed"). There are also _counting_ semaphores where you permit N of leases to be taken, which is available in the venerable [redis-semaphore](https://github.com/dv/redis-semaphore) gem.
 
 The problem comes if you need to hold access to a certain _amount_ of a resource. For example, you know that you are doing 5 expensive operations in bulk, and you know that your entire application can only be doing 20 in total - governed by the API access limits. For that, you need a [counting semaphore](https://ruby-concurrency.github.io/concurrent-ruby/master/Concurrent/Semaphore.html#acquire-instance_method) - such a semaphore is provided by [concurrent-ruby](https://ruby-concurrency.github.io/concurrent-ruby/master/Concurrent/Semaphore.html#acquire-instance_method) for example. It allows you to acquire a certain number of _permits_ and then release them.
 
