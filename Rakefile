@@ -1,5 +1,6 @@
 require "bundler/gem_tasks"
 require "rake/testtask"
+require "standard/rake"
 
 Rake::TestTask.new do |t|
   t.libs << "test"
@@ -8,10 +9,4 @@ Rake::TestTask.new do |t|
   t.verbose = true
 end
 
-# Standard tasks
-require "standard/rake"
-
-# Run standard after tests
-task test: :standard
-
-task default: :test
+task default: [:test, :standard]

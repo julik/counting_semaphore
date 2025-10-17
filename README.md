@@ -22,14 +22,13 @@ This is well covered - for example - by POSIX semaphores if you are within one m
 
 The problem comes if you need to hold access to a certain _amount_ of a resource. For example, you know that you are doing 5 expensive operations in bulk, and you know that your entire application can only be doing 20 in total - governed by the API access limits. For that, you need a [counting semaphore](https://ruby-concurrency.github.io/concurrent-ruby/master/Concurrent/Semaphore.html#acquire-instance_method) - such a semaphore is provided by [concurrent-ruby](https://ruby-concurrency.github.io/concurrent-ruby/master/Concurrent/Semaphore.html#acquire-instance_method) for example. It allows you to acquire a certain number of _permits_ and then release them.
 
-This library does the same and also has a simple `CountingSemaphore` which can be used across threads or fibers. This allows for coordination if you are only running one process/Ractor. It is thread-safe and fairly simple in operation:
-For in-process coordination:
+This library does the same and also has a simple `LocalSemaphore` which can be used across threads or fibers. This allows for coordination if you are only running one process/Ractor. It is thread-safe and fairly simple in operation:
 
 ```ruby
 require "counting_semaphore"
 
 # Create a semaphore that allows up to 10 concurrent operations
-semaphore = CountingSemaphore::LocalSemaphore.new(5)
+semaphore = CountingSemaphore::LocalSemaphore.new(10)
 
 # Do an operation that occupies 2 slots
 semaphore.with_lease(2) do

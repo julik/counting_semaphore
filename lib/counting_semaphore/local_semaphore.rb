@@ -3,7 +3,6 @@
 module CountingSemaphore
   class LocalSemaphore
     SLEEP_WAIT_SECONDS = 0.25
-    SEMA = "🚦" # To not have annoying line height differences
 
     # @return [Integer]
     attr_reader :capacity
@@ -15,7 +14,7 @@ module CountingSemaphore
     # @raise [ArgumentError] if capacity is not positive
     def initialize(capacity, logger: CountingSemaphore::NullLogger)
       raise ArgumentError, "Capacity must be positive, got #{capacity}" unless capacity > 0
-      @capacity = capacity
+      @capacity = capacity.to_i
       @leased = 0
       @mutex = Mutex.new
       @condition = ConditionVariable.new
@@ -61,11 +60,11 @@ module CountingSemaphore
         end
 
         if did_accept
-          @logger.debug "#{SEMA} Leased #{token_count} and now in use #{@leased}/#{@capacity}"
+          @logger.debug { "Leased #{token_count} and now in use #{@leased}/#{@capacity}" }
           return yield
         end
 
-        @logger.debug "#{SEMA} Unable to lease #{token_count}, #{@leased}/#{@capacity} waiting"
+        @logger.debug { "Unable to lease #{token_count}, #{@leased}/#{@capacity} waiting" }
 
         # Wait on condition variable with remaining timeout
         remaining_timeout = timeout_seconds - elapsed_time
@@ -77,7 +76,7 @@ module CountingSemaphore
       end
     ensure
       if did_accept
-        @logger.debug "#{SEMA} Returning #{token_count} leased slots"
+        @logger.debug { "Returning #{token_count} leased slots" }
         @mutex.synchronize do
           @leased -= token_count
           @condition.broadcast # Signal waiting threads
