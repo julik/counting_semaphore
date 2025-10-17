@@ -181,12 +181,33 @@ class LocalSemaphoreTest < Minitest::Test
     # Fill the semaphore
     semaphore.with_lease(1) do
       # Try to acquire another token with a very short timeout
-      assert_raises(Timeout::Error) do
+      assert_raises(CountingSemaphore::LeaseTimeout) do
         semaphore.with_lease(1, timeout_seconds: 0.1) do
           "should not reach here"
         end
       end
     end
+  end
+
+  def test_lease_timeout_includes_semaphore_reference
+    semaphore = CountingSemaphore::LocalSemaphore.new(1)
+    exception = nil
+
+    # Fill the semaphore
+    semaphore.with_lease(1) do
+      # Try to acquire another token with a very short timeout
+
+      semaphore.with_lease(1, timeout_seconds: 0.1) do
+        "should not reach here"
+      end
+    rescue CountingSemaphore::LeaseTimeout => e
+      exception = e
+    end
+
+    refute_nil exception
+    assert_equal semaphore, exception.semaphore
+    assert_equal 1, exception.token_count
+    assert_equal 0.1, exception.timeout_seconds
   end
 
   def test_with_lease_uses_default_token_count_of_1

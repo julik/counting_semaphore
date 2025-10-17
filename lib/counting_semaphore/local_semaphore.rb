@@ -29,7 +29,7 @@ module CountingSemaphore
     # @yield The block to execute while holding the lease
     # @return The result of the block
     # @raise [ArgumentError] if token_count is negative or exceeds the semaphore capacity
-    # @raise [Timeout::Error] if lease cannot be acquired within timeout
+    # @raise [CountingSemaphore::LeaseTimeout] if lease cannot be acquired within timeout
     def with_lease(token_count_num = 1, timeout_seconds: 30)
       token_count = token_count_num.to_i
       raise ArgumentError, "Token count must be non-negative, got #{token_count}" if token_count < 0
@@ -47,7 +47,7 @@ module CountingSemaphore
         # Check timeout
         elapsed_time = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
         if elapsed_time >= timeout_seconds
-          raise Timeout::Error, "Failed to acquire #{token_count} tokens within #{timeout_seconds} seconds"
+          raise CountingSemaphore::LeaseTimeout.new(token_count, timeout_seconds, self)
         end
 
         did_accept = @mutex.synchronize do

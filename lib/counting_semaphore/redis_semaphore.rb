@@ -6,13 +6,6 @@ require "securerandom"
 
 module CountingSemaphore
   class RedisSemaphore
-    # Custom exception for lease acquisition timeouts
-    class LeaseTimeout < StandardError
-      def initialize(token_count, timeout_seconds)
-        super("Failed to acquire #{token_count} tokens within #{timeout_seconds} seconds")
-      end
-    end
-
     LEASE_EXPIRATION_SECONDS = 5
 
     # Lua script for atomic lease acquisition
@@ -281,7 +274,7 @@ module CountingSemaphore
         # Check if we've exceeded the timeout using monotonic time
         elapsed_time = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
         if elapsed_time >= timeout_seconds
-          raise LeaseTimeout.new(token_count, timeout_seconds)
+          raise CountingSemaphore::LeaseTimeout.new(token_count, timeout_seconds, self)
         end
 
         # Try optimistic acquisition first
