@@ -32,7 +32,7 @@ Gem::Specification.new do |spec|
   # Development dependencies
   spec.add_development_dependency "minitest", "~> 5.0"
   spec.add_development_dependency "rake", "~> 13.0"
-  spec.add_development_dependency "rubocop", "~> 1.0"
+  spec.add_development_dependency "standard", ">= 1.35.1"
   spec.add_development_dependency "redis", "~> 5.0"
   spec.add_development_dependency "connection_pool", "~> 2.4"
 end

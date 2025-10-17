@@ -143,10 +143,10 @@ module CountingSemaphore
     # @raise [ArgumentError] if capacity is not positive
     def initialize(capacity, namespace, redis: nil, logger: CountingSemaphore::NullLogger, lease_expiration_seconds: LEASE_EXPIRATION_SECONDS)
       raise ArgumentError, "Capacity must be positive, got #{capacity}" unless capacity > 0
-      
+
       # Require Redis only when SharedSemaphore is used
       require "redis" unless defined?(Redis)
-      
+
       @capacity = capacity
       @redis_connection_pool = wrap_redis_client_with_pool(redis || Redis.new)
       @namespace = namespace
