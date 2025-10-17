@@ -229,4 +229,55 @@ class LocalSemaphoreTest < Minitest::Test
     assert completed
     assert (Time.now - start_time) >= 0.1
   end
+
+  def test_currently_leased_returns_zero_initially
+    semaphore = CountingSemaphore::LocalSemaphore.new(5)
+    assert_equal 0, semaphore.currently_leased
+  end
+
+  def test_currently_leased_increases_during_lease
+    semaphore = CountingSemaphore::LocalSemaphore.new(5)
+    usage_during_lease = nil
+
+    semaphore.with_lease(2) do
+      usage_during_lease = semaphore.currently_leased
+    end
+
+    assert_equal 2, usage_during_lease
+    assert_equal 0, semaphore.currently_leased
+  end
+
+  def test_currently_leased_returns_to_zero_after_lease
+    semaphore = CountingSemaphore::LocalSemaphore.new(3)
+
+    semaphore.with_lease(2) do
+      assert_equal 2, semaphore.currently_leased
+    end
+
+    assert_equal 0, semaphore.currently_leased
+  end
+
+  def test_currently_leased_with_multiple_concurrent_leases
+    semaphore = CountingSemaphore::LocalSemaphore.new(5)
+    usage_values = []
+    mutex = Mutex.new
+
+    # Start multiple threads that will hold leases
+    threads = []
+    3.times do |i|
+      threads << Thread.new do
+        semaphore.with_lease(1) do
+          mutex.synchronize { usage_values << semaphore.currently_leased }
+          sleep(0.1) # Hold the lease briefly
+        end
+      end
+    end
+
+    threads.each(&:join)
+
+    # Should have seen usage values of 1, 2, and 3 (or some combination)
+    assert usage_values.any? { |usage| usage >= 1 }
+    assert usage_values.any? { |usage| usage <= 3 }
+    assert_equal 0, semaphore.currently_leased
+  end
 end

@@ -351,4 +351,71 @@ class RedisSemaphoreTest < Minitest::Test
     # Verify that client2 timed out as expected
     assert client2_timeout_raised, "Expected client2 to raise LeaseTimeout but it didn't"
   end
+
+  def test_currently_leased_returns_zero_initially
+    semaphore = CountingSemaphore::RedisSemaphore.new(5, "test_namespace")
+    assert_equal 0, semaphore.currently_leased
+  end
+
+  def test_currently_leased_increases_during_lease
+    semaphore = CountingSemaphore::RedisSemaphore.new(5, "test_namespace")
+    usage_during_lease = nil
+
+    semaphore.with_lease(2) do
+      usage_during_lease = semaphore.currently_leased
+    end
+
+    assert_equal 2, usage_during_lease
+    assert_equal 0, semaphore.currently_leased
+  end
+
+  def test_currently_leased_returns_to_zero_after_lease
+    semaphore = CountingSemaphore::RedisSemaphore.new(3, "test_namespace")
+
+    semaphore.with_lease(2) do
+      assert_equal 2, semaphore.currently_leased
+    end
+
+    assert_equal 0, semaphore.currently_leased
+  end
+
+  def test_currently_leased_with_multiple_concurrent_leases
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(5, namespace)
+    usage_values = []
+    mutex = Mutex.new
+
+    # Start multiple threads that will hold leases
+    threads = []
+    3.times do |i|
+      threads << Thread.new do
+        semaphore.with_lease(1) do
+          mutex.synchronize { usage_values << semaphore.currently_leased }
+          sleep(0.1) # Hold the lease briefly
+        end
+      end
+    end
+
+    threads.each(&:join)
+
+    # Should have seen usage values of 1, 2, and 3 (or some combination)
+    assert usage_values.any? { |usage| usage >= 1 }
+    assert usage_values.any? { |usage| usage <= 3 }
+    assert_equal 0, semaphore.currently_leased
+  end
+
+  def test_currently_leased_with_distributed_leases
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore1 = CountingSemaphore::RedisSemaphore.new(5, namespace)
+    semaphore2 = CountingSemaphore::RedisSemaphore.new(5, namespace)
+
+    # Both semaphores should see the same usage since they share the namespace
+    semaphore1.with_lease(2) do
+      assert_equal 2, semaphore1.currently_leased
+      assert_equal 2, semaphore2.currently_leased
+    end
+
+    assert_equal 0, semaphore1.currently_leased
+    assert_equal 0, semaphore2.currently_leased
+  end
 end

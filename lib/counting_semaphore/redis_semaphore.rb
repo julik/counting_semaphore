@@ -194,6 +194,13 @@ module CountingSemaphore
       end
     end
 
+    # Get the current number of tokens currently leased
+    #
+    # @return [Integer] Number of tokens currently in use
+    def currently_leased
+      get_current_usage
+    end
+
     # Get current usage and active leases for debugging
     def debug_info
       usage = get_current_usage

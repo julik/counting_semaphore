@@ -84,5 +84,12 @@ module CountingSemaphore
         end
       end
     end
+
+    # Get the current number of tokens currently leased
+    #
+    # @return [Integer] Number of tokens currently in use
+    def currently_leased
+      @mutex.synchronize { @leased }
+    end
   end
 end
