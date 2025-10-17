@@ -47,6 +47,7 @@ require "counting_semaphore"
 require "redis"  # Redis is required for RedisSemaphore
 
 # Create a Redis semaphore using Redis
+ # You can also pass your ConnectionPool instance.
 redis = Redis.new
 semaphore = CountingSemaphore::RedisSemaphore.new(10, "my_namespace", redis: redis)
 
