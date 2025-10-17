@@ -279,4 +279,76 @@ class RedisSemaphoreTest < Minitest::Test
     # Verify that client2 timed out as expected
     assert client2_timeout_raised, "Expected client2 to raise LeaseTimeout but it didn't"
   end
+
+  def test_with_lease_uses_default_token_count_of_1
+    semaphore = CountingSemaphore::RedisSemaphore.new(2, "test_namespace")
+    result = nil
+
+    # Should work with default token count (1)
+    semaphore.with_lease do
+      result = "success"
+    end
+
+    assert_equal "success", result
+  end
+
+  def test_with_lease_default_blocks_when_capacity_exceeded
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    mutex = Mutex.new
+    condition = ConditionVariable.new
+    client1_acquired = false
+    client2_timeout_raised = false
+
+    # Client 1: Acquires all tokens using default (1) and waits for signal to release
+    client1_thread = Thread.new do
+      semaphore1 = CountingSemaphore::RedisSemaphore.new(
+        1, # capacity
+        namespace,
+        redis: Redis.new(db: REDIS_DB),
+        lease_expiration_seconds: 10
+      )
+
+      semaphore1.with_lease do  # Uses default token count of 1
+        mutex.synchronize do
+          client1_acquired = true
+          condition.signal # Signal that client1 has acquired the token
+        end
+
+        # Wait for signal to release the lease
+        mutex.synchronize do
+          condition.wait(mutex, 2) # Wait up to 2 seconds for release signal
+        end
+      end
+    end
+
+    # Client 2: Tries to acquire 1 token with short timeout (should fail)
+    client2_thread = Thread.new do
+      # Wait for client1 to acquire the token
+      mutex.synchronize do
+        condition.wait(mutex, 1) until client1_acquired
+      end
+
+      semaphore2 = CountingSemaphore::RedisSemaphore.new(
+        1, # capacity
+        namespace,
+        redis: Redis.new(db: REDIS_DB),
+        lease_expiration_seconds: 10
+      )
+
+      begin
+        semaphore2.with_lease(timeout_seconds: 0.5) do  # Uses default token count of 1
+          # This should not execute
+        end
+      rescue CountingSemaphore::RedisSemaphore::LeaseTimeout
+        client2_timeout_raised = true
+      end
+    end
+
+    # Wait for both clients to complete
+    client1_thread.join
+    client2_thread.join
+
+    # Verify that client2 timed out as expected
+    assert client2_timeout_raised, "Expected client2 to raise LeaseTimeout but it didn't"
+  end
 end

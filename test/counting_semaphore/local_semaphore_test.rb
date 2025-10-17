@@ -188,4 +188,45 @@ class LocalSemaphoreTest < Minitest::Test
       end
     end
   end
+
+  def test_with_lease_uses_default_token_count_of_1
+    semaphore = CountingSemaphore::LocalSemaphore.new(2)
+    result = nil
+
+    # Should work with default token count (1)
+    semaphore.with_lease do
+      result = "success"
+    end
+
+    assert_equal "success", result
+  end
+
+  def test_with_lease_default_blocks_when_capacity_exceeded
+    semaphore = CountingSemaphore::LocalSemaphore.new(1)
+    start_time = Time.now
+    completed = false
+
+    # Start a thread that will hold the semaphore
+    thread1 = Thread.new do
+      semaphore.with_lease do  # Uses default token count of 1
+        sleep(0.1) # Hold the semaphore briefly
+        "thread1"
+      end
+    end
+
+    # Start another thread that should block
+    thread2 = Thread.new do
+      semaphore.with_lease do  # Uses default token count of 1
+        completed = true
+        "thread2"
+      end
+    end
+
+    thread1.join
+    thread2.join
+
+    # The second thread should have completed after the first released
+    assert completed
+    assert (Time.now - start_time) >= 0.1
+  end
 end

@@ -176,7 +176,7 @@ module CountingSemaphore
     # @return The result of the block
     # @raise [ArgumentError] if token_count is negative or exceeds the semaphore capacity
     # @raise [LeaseTimeout] if lease cannot be acquired within timeout
-    def with_lease(token_count, timeout_seconds: 30)
+    def with_lease(token_count = 1, timeout_seconds: 30)
       raise ArgumentError, "Token count must be non-negative, got #{token_count}" if token_count < 0
       if token_count > @capacity
         raise ArgumentError, "Cannot lease #{token_count} slots as we only allow #{@capacity}"
