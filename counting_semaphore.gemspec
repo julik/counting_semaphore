@@ -34,4 +34,5 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "standard", ">= 1.35.1"
   spec.add_development_dependency "redis", "~> 5.0"
   spec.add_development_dependency "connection_pool", "~> 2.4"
+  spec.add_development_dependency "sord", ">= 0.0.0"
 end

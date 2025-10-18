@@ -1,0 +1,350 @@
+# A counting semaphore that allows up to N concurrent operations.
+# When capacity is exceeded, operations block until resources become available.
+# API compatible with concurrent-ruby's Semaphore class.
+module CountingSemaphore
+  VERSION: untyped
+
+  # Custom exception raised when a semaphore lease cannot be acquired within the specified timeout.
+  # Contains information about the failed acquisition attempt including the semaphore instance,
+  # number of permits requested, and the timeout duration.
+  class LeaseTimeout < StandardError
+    # Creates a new LeaseTimeout exception.
+    # 
+    # _@param_ `permit_count` — Number of permits that were requested
+    # 
+    # _@param_ `timeout_seconds` — The timeout duration that was exceeded
+    # 
+    # _@param_ `semaphore` — The semaphore instance (optional)
+    def initialize: (Integer permit_count, Numeric timeout_seconds, ?(CountingSemaphore::LocalSemaphore | CountingSemaphore::RedisSemaphore)? semaphore) -> void
+
+    # _@return_ — The semaphore that timed out
+    # 
+    # _@return_ — The number of permits that were requested
+    # 
+    # _@return_ — The timeout duration in seconds
+    attr_reader semaphore: (CountingSemaphore::LocalSemaphore | CountingSemaphore::RedisSemaphore | Integer | Numeric)?
+
+    # _@return_ — The semaphore that timed out
+    # 
+    # _@return_ — The number of permits that were requested
+    # 
+    # _@return_ — The timeout duration in seconds
+    attr_reader permit_count: (CountingSemaphore::LocalSemaphore | CountingSemaphore::RedisSemaphore | Integer | Numeric)?
+
+    # _@return_ — The semaphore that timed out
+    # 
+    # _@return_ — The number of permits that were requested
+    # 
+    # _@return_ — The timeout duration in seconds
+    attr_reader timeout_seconds: (CountingSemaphore::LocalSemaphore | CountingSemaphore::RedisSemaphore | Integer | Numeric)?
+  end
+
+  # A null logger that discards all log messages.
+  # Provides the same interface as a real logger but does nothing.
+  # Only yields blocks when ENV["RUN_ALL_LOGGER_BLOCKS"] is set to "yes",
+  # which is useful in testing. Block form for Logger calls allows you
+  # to skip block evaluation if the Logger level is higher than your
+  # call, and thus bugs can nest in those Logger blocks. During
+  # testing it is helpful to excercise those blocks unconditionally.
+  module NullLogger
+    extend CountingSemaphore::NullLogger
+
+    # Logs a debug message. Discards the message but may yield the block for testing.
+    # 
+    # _@param_ `message` — Optional message to log (discarded)
+    def debug: (?String? message) -> void
+
+    # Logs an info message. Discards the message but may yield the block for testing.
+    # 
+    # _@param_ `message` — Optional message to log (discarded)
+    def info: (?String? message) -> void
+
+    # Logs a warning message. Discards the message but may yield the block for testing.
+    # 
+    # _@param_ `message` — Optional message to log (discarded)
+    def warn: (?String? message) -> void
+
+    # Logs an error message. Discards the message but may yield the block for testing.
+    # 
+    # _@param_ `message` — Optional message to log (discarded)
+    def error: (?String? message) -> void
+
+    # Logs a fatal message. Discards the message but may yield the block for testing.
+    # 
+    # _@param_ `message` — Optional message to log (discarded)
+    def fatal: (?String? message) -> void
+
+    # Logs a debug message. Discards the message but may yield the block for testing.
+    # 
+    # _@param_ `message` — Optional message to log (discarded)
+    def self.debug: (?String? message) -> void
+
+    # Logs an info message. Discards the message but may yield the block for testing.
+    # 
+    # _@param_ `message` — Optional message to log (discarded)
+    def self.info: (?String? message) -> void
+
+    # Logs a warning message. Discards the message but may yield the block for testing.
+    # 
+    # _@param_ `message` — Optional message to log (discarded)
+    def self.warn: (?String? message) -> void
+
+    # Logs an error message. Discards the message but may yield the block for testing.
+    # 
+    # _@param_ `message` — Optional message to log (discarded)
+    def self.error: (?String? message) -> void
+
+    # Logs a fatal message. Discards the message but may yield the block for testing.
+    # 
+    # _@param_ `message` — Optional message to log (discarded)
+    def self.fatal: (?String? message) -> void
+  end
+
+  class LocalSemaphore
+    include CountingSemaphore::WithLeaseSupport
+    SLEEP_WAIT_SECONDS: untyped
+
+    # Initialize the semaphore with a maximum capacity.
+    # 
+    # _@param_ `capacity` — Maximum number of concurrent operations allowed (also called permits)
+    # 
+    # _@param_ `logger` — the logger
+    def initialize: (Integer capacity, ?logger: Logger) -> void
+
+    # Acquires the given number of permits from this semaphore, blocking until all are available.
+    # 
+    # _@param_ `permits` — Number of permits to acquire (default: 1)
+    def acquire: (?Integer permits) -> void
+
+    # Releases the given number of permits, returning them to the semaphore.
+    # 
+    # _@param_ `permits` — Number of permits to release (default: 1)
+    def release: (?Integer permits) -> void
+
+    # Acquires the given number of permits from this semaphore, only if all are available
+    # at the time of invocation or within the timeout interval.
+    # 
+    # _@param_ `permits` — Number of permits to acquire (default: 1)
+    # 
+    # _@param_ `timeout` — Number of seconds to wait, or nil to return immediately (default: nil)
+    # 
+    # _@return_ — true if permits were acquired, false otherwise
+    def try_acquire: (?Integer permits, ?Numeric? timeout) -> bool
+
+    # Returns the current number of permits available in this semaphore.
+    # 
+    # _@return_ — Number of available permits
+    def available_permits: () -> Integer
+
+    # Acquires and returns all permits that are immediately available.
+    # 
+    # _@return_ — Number of permits acquired
+    def drain_permits: () -> Integer
+
+    # Acquire a lease for the specified number of permits and execute the block.
+    # Blocks until sufficient resources are available.
+    # Kept for backwards compatibility - wraps acquire/release.
+    # 
+    # _@param_ `permit_count` — Number of permits to acquire (default: 1)
+    # 
+    # _@param_ `timeout_seconds` — Maximum time to wait for lease acquisition (default: 30 seconds)
+    # 
+    # _@return_ — The result of the block
+    def with_lease: (?Integer permit_count, ?timeout_seconds: Integer) -> untyped
+
+    # Get the current number of permits currently acquired.
+    # Kept for backwards compatibility.
+    # 
+    # _@return_ — Number of permits currently in use
+    def currently_leased: () -> Integer
+
+    attr_reader capacity: Integer
+  end
+
+  class RedisSemaphore
+    include CountingSemaphore::WithLeaseSupport
+    LEASE_EXPIRATION_SECONDS: untyped
+    GET_LEASE_SCRIPT: untyped
+    GET_USAGE_SCRIPT: untyped
+    RELEASE_LEASE_SCRIPT: untyped
+    GET_LEASE_SCRIPT_SHA: untyped
+    GET_USAGE_SCRIPT_SHA: untyped
+    RELEASE_LEASE_SCRIPT_SHA: untyped
+
+    # sord warn - Redis wasn't able to be resolved to a constant in this project
+    # sord warn - ConnectionPool wasn't able to be resolved to a constant in this project
+    # sord omit - no YARD type given for "lease_expiration_seconds:", using untyped
+    # Initialize the semaphore with a maximum capacity and required namespace.
+    # 
+    # _@param_ `capacity` — Maximum number of concurrent operations allowed
+    # 
+    # _@param_ `namespace` — Required namespace for Redis keys
+    # 
+    # _@param_ `redis` — Optional Redis client or connection pool (defaults to new Redis instance)
+    # 
+    # _@param_ `logger` — the logger
+    def initialize: (
+                      Integer capacity,
+                      String namespace,
+                      ?redis: (Redis | ConnectionPool)?,
+                      ?logger: Logger,
+                      ?lease_expiration_seconds: untyped
+                    ) -> void
+
+    # Acquires the given number of permits from this semaphore, blocking until all are available.
+    # 
+    # _@param_ `permits` — Number of permits to acquire (default: 1)
+    def acquire: (?Integer permits) -> void
+
+    # Releases the given number of permits, returning them to the semaphore.
+    # 
+    # _@param_ `permits` — Number of permits to release (default: 1)
+    def release: (?Integer permits) -> void
+
+    # Acquires the given number of permits from this semaphore, only if all are available
+    # at the time of invocation or within the timeout interval.
+    # 
+    # _@param_ `permits` — Number of permits to acquire (default: 1)
+    # 
+    # _@param_ `timeout` — Number of seconds to wait, or nil to return immediately (default: nil)
+    # 
+    # _@return_ — true if permits were acquired, false otherwise
+    def try_acquire: (?Integer permits, ?Numeric? timeout) -> bool
+
+    # Returns the current number of permits available in this semaphore.
+    # 
+    # _@return_ — Number of available permits
+    def available_permits: () -> Integer
+
+    # Acquires and returns all permits that are immediately available.
+    # Note: For distributed semaphores, this may not be perfectly accurate due to race conditions.
+    # 
+    # _@return_ — Number of permits acquired
+    def drain_permits: () -> Integer
+
+    # sord omit - no YARD return type given, using untyped
+    # Get current usage and active leases for debugging
+    def debug_info: () -> untyped
+
+    # sord warn - Redis wasn't able to be resolved to a constant in this project
+    # sord warn - ConnectionPool wasn't able to be resolved to a constant in this project
+    # Wraps a Redis client to support both ConnectionPool and bare Redis connections
+    # 
+    # _@param_ `redis` — The Redis client or connection pool
+    # 
+    # _@return_ — A wrapper that supports the `with` method
+    def wrap_redis_client_with_pool: ((Redis | ConnectionPool) redis) -> Object
+
+    # Executes a block with a Redis connection from the pool
+    # 
+    # _@return_ — The result of the block
+    def with_redis: () -> untyped
+
+    # Executes a Redis script with automatic fallback to EVAL on NOSCRIPT error
+    # 
+    # _@param_ `script_type` — The type of script (:get_lease, :release_lease, :get_usage)
+    # 
+    # _@param_ `keys` — Keys for the script
+    # 
+    # _@param_ `argv` — Arguments for the script
+    # 
+    # _@return_ — The result of the script execution
+    def execute_script: (Symbol script_type, ?keys: ::Array[untyped], ?argv: ::Array[untyped]) -> untyped
+
+    # sord omit - no YARD type given for "permit_count", using untyped
+    # sord omit - no YARD type given for "timeout_seconds:", using untyped
+    # sord omit - no YARD return type given, using untyped
+    def acquire_lease_internal: (untyped permit_count, timeout_seconds: untyped) -> untyped
+
+    # sord omit - no YARD type given for "permit_count", using untyped
+    # sord omit - no YARD type given for "remaining_timeout", using untyped
+    # sord omit - no YARD return type given, using untyped
+    def wait_for_permits: (untyped permit_count, untyped remaining_timeout) -> untyped
+
+    # sord omit - no YARD type given for "token_count", using untyped
+    # sord omit - no YARD return type given, using untyped
+    def attempt_lease_acquisition: (untyped token_count) -> untyped
+
+    # sord omit - no YARD type given for "lease_key", using untyped
+    # sord omit - no YARD type given for "token_count", using untyped
+    # sord omit - no YARD return type given, using untyped
+    def release_lease: (untyped lease_key, untyped token_count) -> untyped
+
+    # sord omit - no YARD return type given, using untyped
+    def get_current_usage: () -> untyped
+
+    # sord omit - no YARD return type given, using untyped
+    def generate_lease_id: () -> untyped
+
+    # Acquire a lease for the specified number of tokens and execute the block.
+    # Blocks until sufficient resources are available.
+    # 
+    # _@param_ `token_count` — Number of tokens to acquire
+    # 
+    # _@param_ `timeout_seconds` — Maximum time to wait for lease acquisition (default: 30 seconds)
+    # 
+    # _@return_ — The result of the block
+    def with_lease: (Integer token_count, ?timeout_seconds: Integer) -> untyped
+
+    # sord omit - no YARD type given for "token_count", using untyped
+    # sord omit - no YARD type given for "timeout_seconds:", using untyped
+    # sord omit - no YARD return type given, using untyped
+    def acquire_lease: (untyped token_count, ?timeout_seconds: untyped) -> untyped
+
+    # sord omit - no YARD type given for "token_count", using untyped
+    # sord omit - no YARD type given for "remaining_timeout", using untyped
+    # sord omit - no YARD return type given, using untyped
+    def wait_for_tokens: (untyped token_count, untyped remaining_timeout) -> untyped
+
+    # Get the current number of permits currently acquired.
+    # Kept for backwards compatibility.
+    # 
+    # _@return_ — Number of permits currently in use
+    def currently_leased: () -> Integer
+
+    attr_reader capacity: Integer
+
+    # Null pool for bare Redis connections that don't need connection pooling
+    class NullPool
+      # sord warn - Redis wasn't able to be resolved to a constant in this project
+      # Creates a new NullPool wrapper around a Redis connection.
+      # 
+      # _@param_ `redis_connection` — The Redis connection to wrap
+      def initialize: (Redis redis_connection) -> void
+
+      # Yields the wrapped Redis connection to the block.
+      # Provides ConnectionPool-compatible interface.
+      # 
+      # _@return_ — The result of the block
+      def with: () -> untyped
+    end
+
+    # Custom exception for lease acquisition timeouts
+    class LeaseTimeout < StandardError
+      # sord omit - no YARD type given for "token_count", using untyped
+      # sord omit - no YARD type given for "timeout_seconds", using untyped
+      def initialize: (untyped token_count, untyped timeout_seconds) -> void
+    end
+  end
+
+  # Module providing backwards-compatible with_lease method
+  # Requires the including class to implement: acquire, release, capacity
+  module WithLeaseSupport
+    # Acquire a lease for the specified number of permits and execute the block.
+    # Blocks until sufficient resources are available.
+    # Kept for backwards compatibility - wraps acquire/release.
+    # 
+    # _@param_ `permit_count` — Number of permits to acquire (default: 1)
+    # 
+    # _@param_ `timeout_seconds` — Maximum time to wait for lease acquisition (default: 30 seconds)
+    # 
+    # _@return_ — The result of the block
+    def with_lease: (?Integer permit_count, ?timeout_seconds: Integer) -> untyped
+
+    # Get the current number of permits currently acquired.
+    # Kept for backwards compatibility.
+    # 
+    # _@return_ — Number of permits currently in use
+    def currently_leased: () -> Integer
+  end
+end

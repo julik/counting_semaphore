@@ -9,4 +9,9 @@ Rake::TestTask.new do |t|
   t.verbose = true
 end
 
-task default: [:test, :standard]
+task :generate_typedefs do
+  `bundle exec sord rbi/counting_semaphore.rbi`
+  `bundle exec sord sig/counting_semaphore.rbs`
+end
+
+task default: [:test, :standard, :generate_typedefs]
