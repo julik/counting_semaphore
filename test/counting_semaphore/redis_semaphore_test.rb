@@ -17,11 +17,6 @@ class RedisSemaphoreTest < Minitest::Test
     end
   end
 
-  def test_initializes_with_correct_capacity
-    semaphore = CountingSemaphore::RedisSemaphore.new(5, "test_namespace")
-    assert_equal 5, semaphore.instance_variable_get(:@capacity)
-  end
-
   def test_capacity_attribute_returns_the_initialized_capacity
     semaphore = CountingSemaphore::RedisSemaphore.new(10, "test_namespace")
     assert_equal 10, semaphore.capacity
@@ -417,6 +412,37 @@ class RedisSemaphoreTest < Minitest::Test
     assert client2_timeout_raised, "Expected client2 to raise LeaseTimeout but it didn't"
   end
 
+  def test_with_lease_yields_lease_to_block
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(5, namespace, redis: Redis.new(db: REDIS_DB))
+    yielded_lease = nil
+
+    result = semaphore.with_lease(3) do |lease|
+      yielded_lease = lease
+      "block result"
+    end
+
+    assert_equal "block result", result
+    refute_nil yielded_lease
+    assert_instance_of CountingSemaphore::Lease, yielded_lease
+    assert_equal 3, yielded_lease.permits
+    assert_equal semaphore, yielded_lease.semaphore
+    assert_equal 5, semaphore.available_permits
+  end
+
+  def test_with_lease_yields_nil_for_zero_permits
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(5, namespace, redis: Redis.new(db: REDIS_DB))
+    yielded_lease = :not_set
+
+    semaphore.with_lease(0) do |lease|
+      yielded_lease = lease
+    end
+
+    assert_nil yielded_lease
+    assert_equal 5, semaphore.available_permits
+  end
+
   def test_currently_leased_returns_zero_initially
     semaphore = CountingSemaphore::RedisSemaphore.new(5, "test_namespace")
     assert_equal 0, semaphore.currently_leased
@@ -482,5 +508,393 @@ class RedisSemaphoreTest < Minitest::Test
 
     assert_equal 0, semaphore1.currently_leased
     assert_equal 0, semaphore2.currently_leased
+  end
+
+  # Tests for concurrent-ruby compatible API
+
+  def test_acquire_and_release_single_permit
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(3, namespace, redis: Redis.new(db: REDIS_DB))
+
+    assert_equal 3, semaphore.available_permits
+
+    lease = semaphore.acquire(1)
+    assert_equal 2, semaphore.available_permits
+    semaphore.release(lease)
+    assert_equal 3, semaphore.available_permits
+  end
+
+  def test_acquire_and_release_multiple_permits
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(5, namespace, redis: Redis.new(db: REDIS_DB))
+
+    lease = semaphore.acquire(3)
+    assert_equal 2, semaphore.available_permits
+    semaphore.release(lease)
+    assert_equal 5, semaphore.available_permits
+  end
+
+  def test_acquire_defaults_to_one_permit
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(3, namespace, redis: Redis.new(db: REDIS_DB))
+
+    lease = semaphore.acquire
+    assert_equal 2, semaphore.available_permits
+
+    semaphore.release(lease)
+    assert_equal 3, semaphore.available_permits
+  end
+
+  test_with_timeout "acquire blocks until permits available" do
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    completed_order = []
+    mutex = Mutex.new
+
+    # Thread 1: Acquires permits and holds them
+    thread1 = Thread.new do
+      semaphore1 = CountingSemaphore::RedisSemaphore.new(2, namespace, redis: Redis.new(db: REDIS_DB))
+      lease1 = semaphore1.acquire(2)
+      mutex.synchronize { completed_order << :thread1_acquired }
+      sleep(0.2) # Hold briefly
+      semaphore1.release(lease1)
+      mutex.synchronize { completed_order << :thread1_released }
+    end
+
+    sleep(0.1) # Let thread1 acquire
+
+    # Thread 2: Tries to acquire - should block until thread1 releases
+    thread2 = Thread.new do
+      semaphore2 = CountingSemaphore::RedisSemaphore.new(2, namespace, redis: Redis.new(db: REDIS_DB))
+      mutex.synchronize { completed_order << :thread2_attempting }
+      lease2 = semaphore2.acquire(1)
+      mutex.synchronize { completed_order << :thread2_acquired }
+      semaphore2.release(lease2)
+    end
+
+    thread1.join
+    thread2.join
+
+    # Thread2 should acquire after thread1 releases
+    assert_equal [:thread1_acquired, :thread2_attempting, :thread1_released, :thread2_acquired], completed_order
+  end
+
+  def test_acquire_raises_error_for_invalid_permits
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(5, namespace, redis: Redis.new(db: REDIS_DB))
+
+    assert_raises(ArgumentError) do
+      semaphore.acquire(0)
+    end
+
+    assert_raises(ArgumentError) do
+      semaphore.acquire(-1)
+    end
+  end
+
+  def test_acquire_raises_error_for_permits_exceeding_capacity
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(3, namespace, redis: Redis.new(db: REDIS_DB))
+
+    assert_raises(ArgumentError) do
+      semaphore.acquire(5)
+    end
+  end
+
+  def test_release_raises_error_for_invalid_lease
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(5, namespace, redis: Redis.new(db: REDIS_DB))
+
+    assert_raises(NoMethodError) do
+      semaphore.release("not a lease")
+    end
+
+    assert_raises(NoMethodError) do
+      semaphore.release(nil)
+    end
+  end
+
+  def test_release_raises_error_for_lease_from_different_semaphore
+    namespace1 = "test_semaphore_#{SecureRandom.uuid}"
+    namespace2 = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore1 = CountingSemaphore::RedisSemaphore.new(5, namespace1, redis: Redis.new(db: REDIS_DB))
+    semaphore2 = CountingSemaphore::RedisSemaphore.new(5, namespace2, redis: Redis.new(db: REDIS_DB))
+
+    lease = semaphore1.acquire(1)
+
+    assert_raises(ArgumentError) do
+      semaphore2.release(lease)
+    end
+
+    semaphore1.release(lease)
+  end
+
+  def test_try_acquire_succeeds_when_permits_available
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(3, namespace, redis: Redis.new(db: REDIS_DB))
+
+    lease = semaphore.try_acquire(2)
+    refute_nil lease
+    assert_equal 1, semaphore.available_permits
+
+    semaphore.release(lease)
+  end
+
+  def test_try_acquire_fails_when_permits_not_available
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(2, namespace, redis: Redis.new(db: REDIS_DB))
+
+    lease1 = semaphore.acquire(2)
+    lease2 = semaphore.try_acquire(1)
+    assert_nil lease2
+
+    semaphore.release(lease1)
+  end
+
+  def test_try_acquire_with_nil_timeout_returns_quickly
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(1, namespace, redis: Redis.new(db: REDIS_DB))
+
+    lease1 = semaphore.acquire(1)
+    start_time = Time.now
+
+    lease2 = semaphore.try_acquire(1, nil)
+    elapsed_time = Time.now - start_time
+
+    assert_nil lease2
+    assert elapsed_time < 0.5, "Should return quickly, took #{elapsed_time}s"
+
+    semaphore.release(lease1)
+  end
+
+  test_with_timeout "try_acquire with timeout waits for permits" do
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+
+    # Thread 1: Holds the permit temporarily
+    thread1 = Thread.new do
+      semaphore1 = CountingSemaphore::RedisSemaphore.new(1, namespace, redis: Redis.new(db: REDIS_DB))
+      lease1 = semaphore1.acquire(1)
+      sleep(0.3)
+      semaphore1.release(lease1)
+    end
+
+    sleep(0.1) # Let thread1 acquire
+
+    # Thread 2: Tries to acquire with timeout - should eventually succeed
+    lease2 = nil
+    elapsed_time = 0
+    thread2 = Thread.new do
+      semaphore2 = CountingSemaphore::RedisSemaphore.new(1, namespace, redis: Redis.new(db: REDIS_DB))
+      start_time = Time.now
+      lease2 = semaphore2.try_acquire(1, 1.0)
+      elapsed_time = Time.now - start_time
+      semaphore2.release(lease2) if lease2
+    end
+
+    thread1.join
+    thread2.join
+
+    refute_nil lease2
+    assert elapsed_time >= 0.2, "Should have waited for release"
+    assert elapsed_time < 1.0, "Should not have waited full timeout"
+  end
+
+  def test_try_acquire_with_timeout_fails_when_timeout_exceeded
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(1, namespace, redis: Redis.new(db: REDIS_DB))
+
+    lease1 = semaphore.acquire(1)
+    start_time = Time.now
+    lease2 = semaphore.try_acquire(1, 0.3)
+    elapsed_time = Time.now - start_time
+
+    assert_nil lease2
+    assert elapsed_time >= 0.3, "Should have waited for timeout"
+
+    semaphore.release(lease1)
+  end
+
+  def test_try_acquire_defaults_to_one_permit
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(3, namespace, redis: Redis.new(db: REDIS_DB))
+
+    lease = semaphore.try_acquire
+    refute_nil lease
+    assert_equal 2, semaphore.available_permits
+
+    semaphore.release(lease)
+  end
+
+  def test_try_acquire_raises_error_for_invalid_permits
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(5, namespace, redis: Redis.new(db: REDIS_DB))
+
+    assert_raises(ArgumentError) do
+      semaphore.try_acquire(0)
+    end
+
+    assert_raises(ArgumentError) do
+      semaphore.try_acquire(-1)
+    end
+  end
+
+  def test_available_permits_returns_correct_count
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(5, namespace, redis: Redis.new(db: REDIS_DB))
+
+    assert_equal 5, semaphore.available_permits
+
+    lease1 = semaphore.acquire(2)
+    assert_equal 3, semaphore.available_permits
+
+    lease2 = semaphore.acquire(1)
+    assert_equal 2, semaphore.available_permits
+
+    # Release all acquired permits
+    semaphore.release(lease2)
+    semaphore.release(lease1)
+    assert_equal 5, semaphore.available_permits
+  end
+
+  test_with_timeout "available_permits with concurrent operations" do
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(5, namespace, redis: Redis.new(db: REDIS_DB))
+
+    threads = 3.times.map do
+      Thread.new do
+        lease = semaphore.acquire(1)
+        sleep(0.1)
+        semaphore.release(lease)
+      end
+    end
+
+    sleep(0.05) # Let threads acquire
+    available = semaphore.available_permits
+
+    # Should have 2 or fewer available (3 threads acquired)
+    assert available <= 2, "Expected <= 2 available, got #{available}"
+
+    threads.each(&:join)
+
+    # All should be available now
+    assert_equal 5, semaphore.available_permits
+  end
+
+  def test_drain_permits_acquires_all_available
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(5, namespace, redis: Redis.new(db: REDIS_DB))
+
+    drained_lease = semaphore.drain_permits
+
+    refute_nil drained_lease
+    assert_equal 5, drained_lease.permits
+    assert_equal 0, semaphore.available_permits
+
+    # Release them back
+    semaphore.release(drained_lease)
+    assert_equal 5, semaphore.available_permits
+  end
+
+  def test_drain_permits_acquires_only_available
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(5, namespace, redis: Redis.new(db: REDIS_DB))
+
+    lease1 = semaphore.acquire(2)
+    drained_lease = semaphore.drain_permits
+
+    refute_nil drained_lease
+    assert_equal 3, drained_lease.permits
+    assert_equal 0, semaphore.available_permits
+
+    # Release them back
+    semaphore.release(drained_lease)
+    semaphore.release(lease1)
+    assert_equal 5, semaphore.available_permits
+  end
+
+  def test_drain_permits_returns_nil_when_none_available
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(3, namespace, redis: Redis.new(db: REDIS_DB))
+
+    lease = semaphore.acquire(3)
+    drained_lease = semaphore.drain_permits
+
+    assert_nil drained_lease
+    assert_equal 0, semaphore.available_permits
+    semaphore.release(lease)
+  end
+
+  test_with_timeout "acquire release maintain correct count under stress" do
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(10, namespace, redis: Redis.new(db: REDIS_DB))
+    iterations = 10
+
+    threads = 5.times.map do
+      Thread.new do
+        iterations.times do
+          lease = semaphore.acquire(1)
+          # No sleep - stress test
+          semaphore.release(lease)
+        end
+      end
+    end
+
+    threads.each(&:join)
+
+    # All permits should be available
+    assert_equal 10, semaphore.available_permits
+    assert_equal 0, semaphore.currently_leased
+  end
+
+  test_with_timeout "concurrent ruby api compatibility pattern" do
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(3, namespace, redis: Redis.new(db: REDIS_DB))
+    results = []
+    mutex = Mutex.new
+
+    threads = 5.times.map do |i|
+      Thread.new do
+        if (lease = semaphore.try_acquire(1, 1.0))
+          begin
+            mutex.synchronize { results << i }
+            sleep(0.1)
+          ensure
+            semaphore.release(lease)
+          end
+        end
+      end
+    end
+
+    threads.each(&:join)
+
+    # All threads should complete without hanging
+    assert results.length > 0, "Expected at least some threads to succeed"
+    assert results.length <= 5, "Expected no more threads than total (5)"
+    assert_equal 3, semaphore.available_permits
+  end
+
+  test_with_timeout "distributed acquire and release across multiple instances" do
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore1 = CountingSemaphore::RedisSemaphore.new(5, namespace, redis: Redis.new(db: REDIS_DB))
+    semaphore2 = CountingSemaphore::RedisSemaphore.new(5, namespace, redis: Redis.new(db: REDIS_DB))
+
+    # Acquire from first instance
+    lease1 = semaphore1.acquire(2)
+    assert_equal 3, semaphore1.available_permits
+    assert_equal 3, semaphore2.available_permits
+
+    # Acquire from second instance
+    lease2 = semaphore2.acquire(2)
+    assert_equal 1, semaphore1.available_permits
+    assert_equal 1, semaphore2.available_permits
+
+    # Release from first instance
+    semaphore1.release(lease1)
+    assert_equal 3, semaphore1.available_permits
+    assert_equal 3, semaphore2.available_permits
+
+    # Release from second instance
+    semaphore2.release(lease2)
+    assert_equal 5, semaphore1.available_permits
+    assert_equal 5, semaphore2.available_permits
   end
 end

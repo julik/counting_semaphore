@@ -5,6 +5,30 @@
 module CountingSemaphore
   VERSION = T.let("0.1.0", T.untyped)
 
+  # Represents an acquired lease on a semaphore.
+  # Must be passed to release() to return the permits.
+  class Lease < Struct
+    # Returns a human-readable representation of the lease
+    sig { returns(String) }
+    def to_s; end
+
+    # Returns detailed inspection string
+    sig { returns(String) }
+    def inspect; end
+
+    # Returns the value of attribute semaphore
+    sig { returns(Object) }
+    attr_accessor :semaphore
+
+    # Returns the value of attribute lease_id
+    sig { returns(Object) }
+    attr_accessor :lease_id
+
+    # Returns the value of attribute permits
+    sig { returns(Object) }
+    attr_accessor :permits
+  end
+
   # Custom exception raised when a semaphore lease cannot be acquired within the specified timeout.
   # Contains information about the failed acquisition attempt including the semaphore instance,
   # number of permits requested, and the timeout duration.
@@ -130,14 +154,16 @@ module CountingSemaphore
     # Acquires the given number of permits from this semaphore, blocking until all are available.
     # 
     # _@param_ `permits` — Number of permits to acquire (default: 1)
-    sig { params(permits: Integer).void }
+    # 
+    # _@return_ — A lease object that must be passed to release()
+    sig { params(permits: Integer).returns(CountingSemaphore::Lease) }
     def acquire(permits = 1); end
 
-    # Releases the given number of permits, returning them to the semaphore.
+    # Releases a previously acquired lease, returning the permits to the semaphore.
     # 
-    # _@param_ `permits` — Number of permits to release (default: 1)
-    sig { params(permits: Integer).void }
-    def release(permits = 1); end
+    # _@param_ `lease` — The lease object returned by acquire() or try_acquire()
+    sig { params(lease: CountingSemaphore::Lease).void }
+    def release(lease); end
 
     # Acquires the given number of permits from this semaphore, only if all are available
     # at the time of invocation or within the timeout interval.
@@ -146,8 +172,8 @@ module CountingSemaphore
     # 
     # _@param_ `timeout` — Number of seconds to wait, or nil to return immediately (default: nil)
     # 
-    # _@return_ — true if permits were acquired, false otherwise
-    sig { params(permits: Integer, timeout: T.nilable(Numeric)).returns(T::Boolean) }
+    # _@return_ — A lease object if successful, nil otherwise
+    sig { params(permits: Integer, timeout: T.nilable(Numeric)).returns(T.nilable(CountingSemaphore::Lease)) }
     def try_acquire(permits = 1, timeout = nil); end
 
     # Returns the current number of permits available in this semaphore.
@@ -157,9 +183,10 @@ module CountingSemaphore
     def available_permits; end
 
     # Acquires and returns all permits that are immediately available.
+    # Returns a single lease representing all drained permits.
     # 
-    # _@return_ — Number of permits acquired
-    sig { returns(Integer) }
+    # _@return_ — A lease for all available permits, or nil if none available
+    sig { returns(T.nilable(CountingSemaphore::Lease)) }
     def drain_permits; end
 
     # Acquire a lease for the specified number of permits and execute the block.
@@ -171,8 +198,8 @@ module CountingSemaphore
     # _@param_ `timeout_seconds` — Maximum time to wait for lease acquisition (default: 30 seconds)
     # 
     # _@return_ — The result of the block
-    sig { params(permit_count: Integer, timeout_seconds: Integer).returns(T.untyped) }
-    def with_lease(permit_count = 1, timeout_seconds: 30); end
+    sig { params(permit_count: Integer, timeout_seconds: Integer, blk: T.proc.params(lease: T.nilable(CountingSemaphore::Lease)).void).returns(T.untyped) }
+    def with_lease(permit_count = 1, timeout_seconds: 30, &blk); end
 
     # Get the current number of permits currently acquired.
     # Kept for backwards compatibility.
@@ -317,14 +344,16 @@ LUA
     # Acquires the given number of permits from this semaphore, blocking until all are available.
     # 
     # _@param_ `permits` — Number of permits to acquire (default: 1)
-    sig { params(permits: Integer).void }
+    # 
+    # _@return_ — A lease object that must be passed to release()
+    sig { params(permits: Integer).returns(CountingSemaphore::Lease) }
     def acquire(permits = 1); end
 
-    # Releases the given number of permits, returning them to the semaphore.
+    # Releases a previously acquired lease, returning the permits to the semaphore.
     # 
-    # _@param_ `permits` — Number of permits to release (default: 1)
-    sig { params(permits: Integer).void }
-    def release(permits = 1); end
+    # _@param_ `lease` — The lease object returned by acquire() or try_acquire()
+    sig { params(lease: CountingSemaphore::Lease).void }
+    def release(lease); end
 
     # Acquires the given number of permits from this semaphore, only if all are available
     # at the time of invocation or within the timeout interval.
@@ -333,8 +362,8 @@ LUA
     # 
     # _@param_ `timeout` — Number of seconds to wait, or nil to return immediately (default: nil)
     # 
-    # _@return_ — true if permits were acquired, false otherwise
-    sig { params(permits: Integer, timeout: T.nilable(Numeric)).returns(T::Boolean) }
+    # _@return_ — A lease object if successful, nil otherwise
+    sig { params(permits: Integer, timeout: T.nilable(Numeric)).returns(T.nilable(CountingSemaphore::Lease)) }
     def try_acquire(permits = 1, timeout = nil); end
 
     # Returns the current number of permits available in this semaphore.
@@ -346,8 +375,8 @@ LUA
     # Acquires and returns all permits that are immediately available.
     # Note: For distributed semaphores, this may not be perfectly accurate due to race conditions.
     # 
-    # _@return_ — Number of permits acquired
-    sig { returns(Integer) }
+    # _@return_ — A lease for all available permits, or nil if none available
+    sig { returns(T.nilable(CountingSemaphore::Lease)) }
     def drain_permits; end
 
     # sord omit - no YARD return type given, using untyped
@@ -422,8 +451,8 @@ LUA
     # _@param_ `timeout_seconds` — Maximum time to wait for lease acquisition (default: 30 seconds)
     # 
     # _@return_ — The result of the block
-    sig { params(token_count: Integer, timeout_seconds: Integer).returns(T.untyped) }
-    def with_lease(token_count, timeout_seconds: 30); end
+    sig { params(token_count: Integer, timeout_seconds: Integer, blk: T.proc.params(lease: T.nilable(CountingSemaphore::Lease)).void).returns(T.untyped) }
+    def with_lease(token_count, timeout_seconds: 30, &blk); end
 
     # sord omit - no YARD type given for "token_count", using untyped
     # sord omit - no YARD type given for "timeout_seconds:", using untyped
@@ -485,8 +514,8 @@ LUA
     # _@param_ `timeout_seconds` — Maximum time to wait for lease acquisition (default: 30 seconds)
     # 
     # _@return_ — The result of the block
-    sig { params(permit_count: Integer, timeout_seconds: Integer).returns(T.untyped) }
-    def with_lease(permit_count = 1, timeout_seconds: 30); end
+    sig { params(permit_count: Integer, timeout_seconds: Integer, blk: T.proc.params(lease: T.nilable(CountingSemaphore::Lease)).void).returns(T.untyped) }
+    def with_lease(permit_count = 1, timeout_seconds: 30, &blk); end
 
     # Get the current number of permits currently acquired.
     # Kept for backwards compatibility.

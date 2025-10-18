@@ -1,11 +1,16 @@
+# frozen_string_literal: true
+
 # A distributed counting semaphore that allows up to N concurrent operations across multiple processes.
 # Uses Redis for coordination and automatically handles lease expiration for crashed processes.
 # Uses Redis Lua scripts for atomic operations to prevent race conditions.
+# API compatible with concurrent-ruby's Semaphore class.
 require "digest"
 require "securerandom"
 
 module CountingSemaphore
   class RedisSemaphore
+    include WithLeaseSupport
+
     LEASE_EXPIRATION_SECONDS = 5
 
     # Lua script for atomic lease acquisition
@@ -17,7 +22,7 @@ module CountingSemaphore
       local lease_key = KEYS[1]
       local lease_set_key = KEYS[2]
       local capacity = tonumber(ARGV[1])
-      local token_count = tonumber(ARGV[2])
+      local permit_count = tonumber(ARGV[2])
       local expiration_seconds = tonumber(ARGV[3])
       
       -- Get all active leases from the set and calculate current usage
@@ -26,14 +31,14 @@ module CountingSemaphore
       local valid_leases = {}
       
       for i, key in ipairs(lease_keys) do
-        local tokens = redis.call('GET', key)
-        if tokens then
-          local tokens_from_lease = tonumber(tokens)
-          if tokens_from_lease then
-            current_usage = current_usage + tokens_from_lease
+        local permits = redis.call('GET', key)
+        if permits then
+          local permits_from_lease = tonumber(permits)
+          if permits_from_lease then
+            current_usage = current_usage + permits_from_lease
             table.insert(valid_leases, key)
           else
-            -- Remove lease with invalid token count
+            -- Remove lease with invalid permit count
             redis.call('DEL', key)
             redis.call('SREM', lease_set_key, key)
           end
@@ -45,15 +50,15 @@ module CountingSemaphore
       
       -- Check if we have capacity
       local available = capacity - current_usage
-      if available >= token_count then
-        -- Set lease with TTL (value is just the token count)
-        redis.call('SETEX', lease_key, expiration_seconds, token_count)
+      if available >= permit_count then
+        -- Set lease with TTL (value is just the permit count)
+        redis.call('SETEX', lease_key, expiration_seconds, permit_count)
         -- Add lease key to the set
         redis.call('SADD', lease_set_key, lease_key)
         -- Set TTL on the set (4x the lease TTL to ensure cleanup)
         redis.call('EXPIRE', lease_set_key, expiration_seconds * 4)
         
-        return {1, lease_key, current_usage + token_count}
+        return {1, lease_key, current_usage + permit_count}
       else
         return {0, '', current_usage}
       end
@@ -71,14 +76,14 @@ module CountingSemaphore
       local has_valid_leases = false
       
       for i, lease_key in ipairs(lease_keys) do
-        local tokens = redis.call('GET', lease_key)
-        if tokens then
-          local tokens_from_lease = tonumber(tokens)
-          if tokens_from_lease then
-            current_usage = current_usage + tokens_from_lease
+        local permits = redis.call('GET', lease_key)
+        if permits then
+          local permits_from_lease = tonumber(permits)
+          if permits_from_lease then
+            current_usage = current_usage + permits_from_lease
             has_valid_leases = true
           else
-            -- Remove lease with invalid token count
+            -- Remove lease with invalid permit count
             redis.call('DEL', lease_key)
             redis.call('SREM', lease_set_key, lease_key)
           end
@@ -102,7 +107,7 @@ module CountingSemaphore
       local lease_key = KEYS[1]
       local queue_key = KEYS[2]
       local lease_set_key = KEYS[3]
-      local token_count = tonumber(ARGV[1])
+      local permit_count = tonumber(ARGV[1])
       local max_signals = tonumber(ARGV[2])
       
       -- Remove the lease
@@ -110,8 +115,8 @@ module CountingSemaphore
       -- Remove from the lease set
       redis.call('SREM', lease_set_key, lease_key)
       
-      -- Signal waiting clients about the released tokens
-      redis.call('LPUSH', queue_key, 'tokens:' .. token_count)
+      -- Signal waiting clients about the released permits
+      redis.call('LPUSH', queue_key, 'permits:' .. permit_count)
       
       -- Trim queue to prevent indefinite growth (atomic)
       redis.call('LTRIM', queue_key, 0, max_signals - 1)
@@ -129,7 +134,7 @@ module CountingSemaphore
 
     # Initialize the semaphore with a maximum capacity and required namespace.
     #
-    # @param capacity [Integer] Maximum number of concurrent operations allowed
+    # @param capacity [Integer] Maximum number of concurrent operations allowed (also called permits)
     # @param namespace [String] Required namespace for Redis keys
     # @param redis [Redis, ConnectionPool] Optional Redis client or connection pool (defaults to new Redis instance)
     # @param logger [Logger] the logger
@@ -137,7 +142,7 @@ module CountingSemaphore
     def initialize(capacity, namespace, redis: nil, logger: CountingSemaphore::NullLogger, lease_expiration_seconds: LEASE_EXPIRATION_SECONDS)
       raise ArgumentError, "Capacity must be positive, got #{capacity}" unless capacity > 0
 
-      # Require Redis only when SharedSemaphore is used
+      # Require Redis only when RedisSemaphore is used
       require "redis" unless defined?(Redis)
 
       @capacity = capacity
@@ -149,52 +154,117 @@ module CountingSemaphore
       # Scripts are precomputed and will be loaded on-demand if needed
     end
 
-    # Null pool for bare Redis connections that don't need connection pooling
+    # Null pool for bare Redis connections that don't need connection pooling.
+    # Provides a compatible interface with ConnectionPool for bare Redis instances.
     class NullPool
+      # Creates a new NullPool wrapper around a Redis connection.
+      #
+      # @param redis_connection [Redis] The Redis connection to wrap
       def initialize(redis_connection)
         @redis_connection = redis_connection
       end
 
+      # Yields the wrapped Redis connection to the block.
+      # Provides ConnectionPool-compatible interface.
+      #
+      # @yield [redis] The Redis connection
+      # @return The result of the block
       def with(&block)
         block.call(@redis_connection)
       end
     end
 
-    # Acquire a lease for the specified number of tokens and execute the block.
-    # Blocks until sufficient resources are available.
+    # Acquires the given number of permits from this semaphore, blocking until all are available.
     #
-    # @param token_count [Integer] Number of tokens to acquire
-    # @param timeout_seconds [Integer] Maximum time to wait for lease acquisition (default: 30 seconds)
-    # @yield The block to execute while holding the lease
-    # @return The result of the block
-    # @raise [ArgumentError] if token_count is negative or exceeds the semaphore capacity
-    # @raise [LeaseTimeout] if lease cannot be acquired within timeout
-    def with_lease(token_count = 1, timeout_seconds: 30)
-      raise ArgumentError, "Token count must be non-negative, got #{token_count}" if token_count < 0
-      if token_count > @capacity
-        raise ArgumentError, "Cannot lease #{token_count} slots as we only allow #{@capacity}"
+    # @param permits [Integer] Number of permits to acquire (default: 1)
+    # @return [CountingSemaphore::Lease] A lease object that must be passed to release()
+    # @raise [ArgumentError] if permits is not an integer or is less than one
+    def acquire(permits = 1)
+      raise ArgumentError, "Permits must be at least 1, got #{permits}" if permits < 1
+      if permits > @capacity
+        raise ArgumentError, "Cannot acquire #{permits} permits as capacity is only #{@capacity}"
       end
 
-      # Handle zero tokens case - no Redis coordination needed
-      return yield if token_count.zero?
+      lease_key = acquire_lease_internal(permits, timeout_seconds: nil)
+      @logger.debug { "Acquired #{permits} permits with lease #{lease_key}" }
 
-      lease_key = acquire_lease(token_count, timeout_seconds: timeout_seconds)
+      CountingSemaphore::Lease.new(
+        semaphore: self,
+        id: lease_key,
+        permits: permits
+      )
+    end
+
+    # Releases a previously acquired lease, returning the permits to the semaphore.
+    #
+    # @param lease [CountingSemaphore::Lease] The lease object returned by acquire() or try_acquire()
+    # @return [nil]
+    # @raise [ArgumentError] if lease belongs to a different semaphore
+    def release(lease)
+      unless lease.semaphore == self
+        raise ArgumentError, "Lease belongs to a different semaphore"
+      end
+
+      release_lease(lease.id, lease.permits)
+      nil
+    end
+
+    # Acquires the given number of permits from this semaphore, only if all are available
+    # at the time of invocation or within the timeout interval.
+    #
+    # @param permits [Integer] Number of permits to acquire (default: 1)
+    # @param timeout [Numeric, nil] Number of seconds to wait, or nil to return immediately (default: nil)
+    # @return [CountingSemaphore::Lease, nil] A lease object if successful, nil otherwise
+    # @raise [ArgumentError] if permits is not an integer or is less than one
+    def try_acquire(permits = 1, timeout = nil)
+      raise ArgumentError, "Permits must be at least 1, got #{permits}" if permits < 1
+      if permits > @capacity
+        return nil
+      end
+
+      timeout_seconds = timeout.nil? ? 0.1 : timeout
       begin
-        @logger.debug { "Leased #{token_count} tokens with lease #{lease_key}" }
-        yield
-      ensure
-        release_lease(lease_key, token_count)
+        lease_key = acquire_lease_internal(permits, timeout_seconds: timeout_seconds)
+        @logger.debug { "Acquired #{permits} permits (try) with lease #{lease_key}" }
+
+        CountingSemaphore::Lease.new(
+          semaphore: self,
+          id: lease_key,
+          permits: permits
+        )
+      rescue CountingSemaphore::LeaseTimeout
+        nil
       end
     end
 
-    # Get the current number of tokens currently leased
+    # Returns the current number of permits available in this semaphore.
     #
-    # @return [Integer] Number of tokens currently in use
-    def currently_leased
-      get_current_usage
+    # @return [Integer] Number of available permits
+    def available_permits
+      current_usage = get_current_usage
+      @capacity - current_usage
     end
 
-    # Get current usage and active leases for debugging
+    # Acquires and returns all permits that are immediately available.
+    # Note: For distributed semaphores, this may not be perfectly accurate due to race conditions.
+    #
+    # @return [CountingSemaphore::Lease, nil] A lease for all available permits, or nil if none available
+    def drain_permits
+      available = available_permits
+      return nil if available <= 0
+
+      # Try to acquire all available permits
+      try_acquire(available, 0.1)
+    end
+
+    # Returns debugging information about the current state of the semaphore.
+    # Includes current usage, capacity, available permits, and details about active leases.
+    #
+    # @return [Hash] A hash containing :usage, :capacity, :available, and :active_leases
+    # @example
+    #   info = semaphore.debug_info
+    #   puts "Usage: #{info[:usage]}/#{info[:capacity]}"
+    #   info[:active_leases].each { |lease| puts "Lease: #{lease[:key]} - #{lease[:permits]} permits" }
     def debug_info
       usage = get_current_usage
       lease_set_key = "#{@namespace}:lease_set"
@@ -202,12 +272,12 @@ module CountingSemaphore
       active_leases = []
 
       lease_keys.each do |lease_key|
-        tokens = with_redis { |redis| redis.get(lease_key) }
-        next unless tokens
+        permits = with_redis { |redis| redis.get(lease_key) }
+        next unless permits
 
         active_leases << {
           key: lease_key,
-          tokens: tokens.to_i
+          permits: permits.to_i
         }
       end
 
@@ -267,54 +337,72 @@ module CountingSemaphore
       end
     end
 
-    def acquire_lease(token_count, timeout_seconds: 30)
-      start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    def acquire_lease_internal(permit_count, timeout_seconds:)
+      # If timeout is nil, wait indefinitely (for acquire method)
+      if timeout_seconds.nil?
+        loop do
+          lease_key = attempt_lease_acquisition(permit_count)
+          return lease_key if lease_key
 
-      loop do
-        # Check if we've exceeded the timeout using monotonic time
-        elapsed_time = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
-        if elapsed_time >= timeout_seconds
-          raise CountingSemaphore::LeaseTimeout.new(token_count, timeout_seconds, self)
+          # Wait for signals indefinitely
+          wait_for_permits(permit_count, nil)
         end
+      else
+        # Wait with timeout (for with_lease and try_acquire)
+        start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-        # Try optimistic acquisition first
-        lease_key = attempt_lease_acquisition(token_count)
-        return lease_key if lease_key
+        loop do
+          # Check if we've exceeded the timeout using monotonic time
+          elapsed_time = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
+          if elapsed_time >= timeout_seconds
+            raise CountingSemaphore::LeaseTimeout.new(permit_count, timeout_seconds, self)
+          end
 
-        # If failed, wait for signals with timeout
-        lease_key = wait_for_tokens(token_count, timeout_seconds - elapsed_time)
-        return lease_key if lease_key
+          # Try optimistic acquisition first
+          lease_key = attempt_lease_acquisition(permit_count)
+          return lease_key if lease_key
+
+          # If failed, wait for signals with timeout
+          lease_key = wait_for_permits(permit_count, timeout_seconds - elapsed_time)
+          return lease_key if lease_key
+        end
       end
     end
 
-    def wait_for_tokens(token_count, remaining_timeout)
-      # Ensure minimum timeout to prevent infinite blocking
-      # BLPOP with timeout 0 blocks forever, so we need at least a small positive timeout
-      minimum_timeout = 0.1
-      if remaining_timeout <= minimum_timeout
-        @logger.debug { "Remaining timeout (#{remaining_timeout}s) too small, not waiting" }
-        return nil
-      end
+    def wait_for_permits(permit_count, remaining_timeout)
+      # If remaining_timeout is nil, wait indefinitely
+      if remaining_timeout.nil?
+        timeout = @lease_expiration_seconds + 2
+        @logger.debug { "Unable to acquire #{permit_count} permits, waiting for signals (indefinite)" }
+      else
+        # Ensure minimum timeout to prevent infinite blocking
+        # BLPOP with timeout 0 blocks forever, so we need at least a small positive timeout
+        minimum_timeout = 0.1
+        if remaining_timeout <= minimum_timeout
+          @logger.debug { "Remaining timeout (#{remaining_timeout}s) too small, not waiting" }
+          return nil
+        end
 
-      # Block with timeout (longer than lease expiration to handle stale leases)
-      # But don't exceed the remaining timeout
-      timeout = [@lease_expiration_seconds + 2, remaining_timeout].min
-      @logger.debug { "Unable to lease #{token_count}, waiting for signals (timeout: #{timeout}s)" }
+        # Block with timeout (longer than lease expiration to handle stale leases)
+        # But don't exceed the remaining timeout
+        timeout = [@lease_expiration_seconds + 2, remaining_timeout].min
+        @logger.debug { "Unable to acquire #{permit_count} permits, waiting for signals (timeout: #{timeout}s)" }
+      end
 
       with_redis { |redis| redis.blpop("#{@namespace}:waiting_queue", timeout: timeout.to_f) }
 
       # Try to acquire after any signal or timeout
-      lease_key = attempt_lease_acquisition(token_count)
+      lease_key = attempt_lease_acquisition(permit_count)
       if lease_key
         return lease_key
       end
 
-      # If still can't acquire, return nil to continue the loop in acquire_lease
-      @logger.debug { "Still unable to lease #{token_count} after signal/timeout, continuing to wait" }
+      # If still can't acquire, return nil to continue the loop
+      @logger.debug { "Still unable to acquire #{permit_count} permits after signal/timeout, continuing to wait" }
       nil
     end
 
-    def attempt_lease_acquisition(token_count)
+    def attempt_lease_acquisition(permit_count)
       lease_id = generate_lease_id
       lease_key = "#{@namespace}:leases:#{lease_id}"
       lease_set_key = "#{@namespace}:lease_set"
@@ -325,7 +413,7 @@ module CountingSemaphore
         keys: [lease_key, lease_set_key],
         argv: [
           @capacity.to_s,
-          token_count.to_s,
+          permit_count.to_s,
           @lease_expiration_seconds.to_s
         ]
       )
@@ -343,7 +431,7 @@ module CountingSemaphore
       end
     end
 
-    def release_lease(lease_key, token_count)
+    def release_lease(lease_key, permit_count)
       return if lease_key.nil?
 
       full_lease_key = "#{@namespace}:leases:#{lease_key}"
@@ -355,12 +443,12 @@ module CountingSemaphore
         :release_lease,
         keys: [full_lease_key, queue_key, lease_set_key],
         argv: [
-          token_count.to_s,
+          permit_count.to_s,
           (@capacity * 2).to_s
         ]
       )
 
-      @logger.debug { "Returned #{token_count} leased tokens (lease: #{lease_key}) and signaled waiting clients" }
+      @logger.debug { "Returned #{permit_count} leased permits (lease: #{lease_key}) and signaled waiting clients" }
     end
 
     def get_current_usage

@@ -1,7 +1,12 @@
+# frozen_string_literal: true
+
 # A counting semaphore that allows up to N concurrent operations.
 # When capacity is exceeded, operations block until resources become available.
+# API compatible with concurrent-ruby's Semaphore class.
 module CountingSemaphore
   class LocalSemaphore
+    include WithLeaseSupport
+
     SLEEP_WAIT_SECONDS = 0.25
 
     # @return [Integer]
@@ -9,86 +14,163 @@ module CountingSemaphore
 
     # Initialize the semaphore with a maximum capacity.
     #
-    # @param capacity [Integer] Maximum number of concurrent operations allowed
+    # @param capacity [Integer] Maximum number of concurrent operations allowed (also called permits)
     # @param logger [Logger] the logger
     # @raise [ArgumentError] if capacity is not positive
     def initialize(capacity, logger: CountingSemaphore::NullLogger)
       raise ArgumentError, "Capacity must be positive, got #{capacity}" unless capacity > 0
       @capacity = capacity.to_i
-      @leased = 0
+      @acquired = 0
       @mutex = Mutex.new
       @condition = ConditionVariable.new
       @logger = logger
     end
 
-    # Acquire a lease for the specified number of tokens and execute the block.
-    # Blocks until sufficient resources are available.
+    # Acquires the given number of permits from this semaphore, blocking until all are available.
     #
-    # @param token_count [Integer] Number of tokens to acquire
-    # @param timeout_seconds [Integer] Maximum time to wait for lease acquisition (default: 30 seconds)
-    # @yield The block to execute while holding the lease
-    # @return The result of the block
-    # @raise [ArgumentError] if token_count is negative or exceeds the semaphore capacity
-    # @raise [CountingSemaphore::LeaseTimeout] if lease cannot be acquired within timeout
-    def with_lease(token_count_num = 1, timeout_seconds: 30)
-      token_count = token_count_num.to_i
-      raise ArgumentError, "Token count must be non-negative, got #{token_count}" if token_count < 0
-      if token_count > @capacity
-        raise ArgumentError, "Cannot lease #{token_count} slots as we only allow #{@capacity}"
+    # @param permits [Integer] Number of permits to acquire (default: 1)
+    # @return [CountingSemaphore::Lease] A lease object that must be passed to release()
+    # @raise [ArgumentError] if permits is not an integer or is less than one
+    def acquire(permits = 1)
+      permits = permits.to_i
+      raise ArgumentError, "Permits must be at least 1, got #{permits}" if permits < 1
+      if permits > @capacity
+        raise ArgumentError, "Cannot acquire #{permits} permits as capacity is only #{@capacity}"
       end
 
-      # Handle zero tokens case - no waiting needed
-      return yield if token_count.zero?
-
-      did_accept = false
-      start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-
       loop do
-        # Check timeout
-        elapsed_time = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
-        if elapsed_time >= timeout_seconds
-          raise CountingSemaphore::LeaseTimeout.new(token_count, timeout_seconds, self)
-        end
-
-        did_accept = @mutex.synchronize do
-          if (@capacity - @leased) >= token_count
-            @leased += token_count
+        acquired = @mutex.synchronize do
+          if (@capacity - @acquired) >= permits
+            @acquired += permits
+            @logger.debug { "Acquired #{permits} permits, now #{@acquired}/#{@capacity}" }
             true
           else
             false
           end
         end
 
-        if did_accept
-          @logger.debug { "Leased #{token_count} and now in use #{@leased}/#{@capacity}" }
-          return yield
+        if acquired
+          lease_id = "local_#{object_id}_#{Time.now.to_f}_#{rand(1000000)}"
+          return CountingSemaphore::Lease.new(
+            semaphore: self,
+            id: lease_id,
+            permits: permits
+          )
         end
 
-        @logger.debug { "Unable to lease #{token_count}, #{@leased}/#{@capacity} waiting" }
-
-        # Wait on condition variable with remaining timeout
-        remaining_timeout = timeout_seconds - elapsed_time
-        if remaining_timeout > 0
-          @mutex.synchronize do
-            @condition.wait(@mutex, remaining_timeout)
-          end
-        end
-      end
-    ensure
-      if did_accept
-        @logger.debug { "Returning #{token_count} leased slots" }
+        @logger.debug { "Unable to acquire #{permits} permits, #{@acquired}/#{@capacity} in use, waiting" }
         @mutex.synchronize do
-          @leased -= token_count
-          @condition.broadcast # Signal waiting threads
+          @condition.wait(@mutex)
         end
       end
     end
 
-    # Get the current number of tokens currently leased
+    # Releases a previously acquired lease, returning the permits to the semaphore.
     #
-    # @return [Integer] Number of tokens currently in use
-    def currently_leased
-      @mutex.synchronize { @leased }
+    # @param lease [CountingSemaphore::Lease] The lease object returned by acquire() or try_acquire()
+    # @return [nil]
+    # @raise [ArgumentError] if lease belongs to a different semaphore
+    def release(lease)
+      unless lease.semaphore == self
+        raise ArgumentError, "Lease belongs to a different semaphore"
+      end
+
+      permits = lease.permits
+
+      @mutex.synchronize do
+        @acquired -= permits
+        @logger.debug { "Released #{permits} permits (lease: #{lease.id}), now #{@acquired}/#{@capacity}" }
+        @condition.broadcast # Signal waiting threads
+      end
+      nil
+    end
+
+    # Acquires the given number of permits from this semaphore, only if all are available
+    # at the time of invocation or within the timeout interval.
+    #
+    # @param permits [Integer] Number of permits to acquire (default: 1)
+    # @param timeout [Numeric, nil] Number of seconds to wait, or nil to return immediately (default: nil)
+    # @return [CountingSemaphore::Lease, nil] A lease object if successful, nil otherwise
+    # @raise [ArgumentError] if permits is not an integer or is less than one
+    def try_acquire(permits = 1, timeout = nil)
+      permits = permits.to_i
+      raise ArgumentError, "Permits must be at least 1, got #{permits}" if permits < 1
+      if permits > @capacity
+        return nil
+      end
+
+      start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC) if timeout
+
+      loop do
+        # Check timeout
+        if timeout
+          elapsed_time = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
+          return nil if elapsed_time >= timeout
+        end
+
+        acquired = @mutex.synchronize do
+          if (@capacity - @acquired) >= permits
+            @acquired += permits
+            @logger.debug { "Acquired #{permits} permits (try), now #{@acquired}/#{@capacity}" }
+            true
+          else
+            false
+          end
+        end
+
+        if acquired
+          lease_id = "local_#{object_id}_#{Time.now.to_f}_#{rand(1000000)}"
+          return CountingSemaphore::Lease.new(
+            semaphore: self,
+            id: lease_id,
+            permits: permits
+          )
+        end
+
+        # If no timeout, return immediately
+        return nil if timeout.nil?
+
+        # Wait with remaining timeout
+        remaining_timeout = timeout - (Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time)
+        return nil if remaining_timeout <= 0
+
+        @mutex.synchronize do
+          @condition.wait(@mutex, remaining_timeout)
+        end
+      end
+    end
+
+    # Returns the current number of permits available in this semaphore.
+    #
+    # @return [Integer] Number of available permits
+    def available_permits
+      @mutex.synchronize { @capacity - @acquired }
+    end
+
+    # Acquires and returns all permits that are immediately available.
+    # Returns a single lease representing all drained permits.
+    #
+    # @return [CountingSemaphore::Lease, nil] A lease for all available permits, or nil if none available
+    def drain_permits
+      permits = @mutex.synchronize do
+        available = @capacity - @acquired
+        if available > 0
+          @acquired = @capacity
+          @logger.debug { "Drained #{available} permits" }
+          available
+        else
+          0
+        end
+      end
+
+      if permits > 0
+        lease_id = "local_#{object_id}_#{Time.now.to_f}_#{rand(1000000)}"
+        CountingSemaphore::Lease.new(
+          semaphore: self,
+          id: lease_id,
+          permits: permits
+        )
+      end
     end
   end
 end

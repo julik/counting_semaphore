@@ -4,6 +4,25 @@
 module CountingSemaphore
   VERSION: untyped
 
+  # Represents an acquired lease on a semaphore.
+  # Must be passed to release() to return the permits.
+  class Lease < Struct
+    # Returns a human-readable representation of the lease
+    def to_s: () -> String
+
+    # Returns detailed inspection string
+    def inspect: () -> String
+
+    # Returns the value of attribute semaphore
+    attr_accessor semaphore: Object
+
+    # Returns the value of attribute lease_id
+    attr_accessor lease_id: Object
+
+    # Returns the value of attribute permits
+    attr_accessor permits: Object
+  end
+
   # Custom exception raised when a semaphore lease cannot be acquired within the specified timeout.
   # Contains information about the failed acquisition attempt including the semaphore instance,
   # number of permits requested, and the timeout duration.
@@ -114,12 +133,14 @@ module CountingSemaphore
     # Acquires the given number of permits from this semaphore, blocking until all are available.
     # 
     # _@param_ `permits` — Number of permits to acquire (default: 1)
-    def acquire: (?Integer permits) -> void
-
-    # Releases the given number of permits, returning them to the semaphore.
     # 
-    # _@param_ `permits` — Number of permits to release (default: 1)
-    def release: (?Integer permits) -> void
+    # _@return_ — A lease object that must be passed to release()
+    def acquire: (?Integer permits) -> CountingSemaphore::Lease
+
+    # Releases a previously acquired lease, returning the permits to the semaphore.
+    # 
+    # _@param_ `lease` — The lease object returned by acquire() or try_acquire()
+    def release: (CountingSemaphore::Lease lease) -> void
 
     # Acquires the given number of permits from this semaphore, only if all are available
     # at the time of invocation or within the timeout interval.
@@ -128,8 +149,8 @@ module CountingSemaphore
     # 
     # _@param_ `timeout` — Number of seconds to wait, or nil to return immediately (default: nil)
     # 
-    # _@return_ — true if permits were acquired, false otherwise
-    def try_acquire: (?Integer permits, ?Numeric? timeout) -> bool
+    # _@return_ — A lease object if successful, nil otherwise
+    def try_acquire: (?Integer permits, ?Numeric? timeout) -> CountingSemaphore::Lease?
 
     # Returns the current number of permits available in this semaphore.
     # 
@@ -137,9 +158,10 @@ module CountingSemaphore
     def available_permits: () -> Integer
 
     # Acquires and returns all permits that are immediately available.
+    # Returns a single lease representing all drained permits.
     # 
-    # _@return_ — Number of permits acquired
-    def drain_permits: () -> Integer
+    # _@return_ — A lease for all available permits, or nil if none available
+    def drain_permits: () -> CountingSemaphore::Lease?
 
     # Acquire a lease for the specified number of permits and execute the block.
     # Blocks until sufficient resources are available.
@@ -150,7 +172,7 @@ module CountingSemaphore
     # _@param_ `timeout_seconds` — Maximum time to wait for lease acquisition (default: 30 seconds)
     # 
     # _@return_ — The result of the block
-    def with_lease: (?Integer permit_count, ?timeout_seconds: Integer) -> untyped
+    def with_lease: (?Integer permit_count, ?timeout_seconds: Integer) ?{ (CountingSemaphore::Lease? lease) -> void } -> untyped
 
     # Get the current number of permits currently acquired.
     # Kept for backwards compatibility.
@@ -194,12 +216,14 @@ module CountingSemaphore
     # Acquires the given number of permits from this semaphore, blocking until all are available.
     # 
     # _@param_ `permits` — Number of permits to acquire (default: 1)
-    def acquire: (?Integer permits) -> void
-
-    # Releases the given number of permits, returning them to the semaphore.
     # 
-    # _@param_ `permits` — Number of permits to release (default: 1)
-    def release: (?Integer permits) -> void
+    # _@return_ — A lease object that must be passed to release()
+    def acquire: (?Integer permits) -> CountingSemaphore::Lease
+
+    # Releases a previously acquired lease, returning the permits to the semaphore.
+    # 
+    # _@param_ `lease` — The lease object returned by acquire() or try_acquire()
+    def release: (CountingSemaphore::Lease lease) -> void
 
     # Acquires the given number of permits from this semaphore, only if all are available
     # at the time of invocation or within the timeout interval.
@@ -208,8 +232,8 @@ module CountingSemaphore
     # 
     # _@param_ `timeout` — Number of seconds to wait, or nil to return immediately (default: nil)
     # 
-    # _@return_ — true if permits were acquired, false otherwise
-    def try_acquire: (?Integer permits, ?Numeric? timeout) -> bool
+    # _@return_ — A lease object if successful, nil otherwise
+    def try_acquire: (?Integer permits, ?Numeric? timeout) -> CountingSemaphore::Lease?
 
     # Returns the current number of permits available in this semaphore.
     # 
@@ -219,8 +243,8 @@ module CountingSemaphore
     # Acquires and returns all permits that are immediately available.
     # Note: For distributed semaphores, this may not be perfectly accurate due to race conditions.
     # 
-    # _@return_ — Number of permits acquired
-    def drain_permits: () -> Integer
+    # _@return_ — A lease for all available permits, or nil if none available
+    def drain_permits: () -> CountingSemaphore::Lease?
 
     # sord omit - no YARD return type given, using untyped
     # Get current usage and active leases for debugging
@@ -284,7 +308,7 @@ module CountingSemaphore
     # _@param_ `timeout_seconds` — Maximum time to wait for lease acquisition (default: 30 seconds)
     # 
     # _@return_ — The result of the block
-    def with_lease: (Integer token_count, ?timeout_seconds: Integer) -> untyped
+    def with_lease: (Integer token_count, ?timeout_seconds: Integer) ?{ (CountingSemaphore::Lease? lease) -> void } -> untyped
 
     # sord omit - no YARD type given for "token_count", using untyped
     # sord omit - no YARD type given for "timeout_seconds:", using untyped
@@ -339,7 +363,7 @@ module CountingSemaphore
     # _@param_ `timeout_seconds` — Maximum time to wait for lease acquisition (default: 30 seconds)
     # 
     # _@return_ — The result of the block
-    def with_lease: (?Integer permit_count, ?timeout_seconds: Integer) -> untyped
+    def with_lease: (?Integer permit_count, ?timeout_seconds: Integer) ?{ (CountingSemaphore::Lease? lease) -> void } -> untyped
 
     # Get the current number of permits currently acquired.
     # Kept for backwards compatibility.
