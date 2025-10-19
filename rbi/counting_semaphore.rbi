@@ -3,7 +3,7 @@
 # When capacity is exceeded, operations block until resources become available.
 # API compatible with concurrent-ruby's Semaphore class.
 module CountingSemaphore
-  VERSION = T.let("0.1.0", T.untyped)
+  VERSION = T.let("0.2.0", T.untyped)
 
   # Represents an acquired lease on a semaphore.
   # Must be passed to release() to return the permits.
@@ -20,9 +20,9 @@ module CountingSemaphore
     sig { returns(Object) }
     attr_accessor :semaphore
 
-    # Returns the value of attribute lease_id
+    # Returns the value of attribute id
     sig { returns(Object) }
-    attr_accessor :lease_id
+    attr_accessor :id
 
     # Returns the value of attribute permits
     sig { returns(Object) }

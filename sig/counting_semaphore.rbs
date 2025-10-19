@@ -16,8 +16,8 @@ module CountingSemaphore
     # Returns the value of attribute semaphore
     attr_accessor semaphore: Object
 
-    # Returns the value of attribute lease_id
-    attr_accessor lease_id: Object
+    # Returns the value of attribute id
+    attr_accessor id: Object
 
     # Returns the value of attribute permits
     attr_accessor permits: Object
