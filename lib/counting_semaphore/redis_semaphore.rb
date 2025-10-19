@@ -213,10 +213,11 @@ module CountingSemaphore
     # at the time of invocation or within the timeout interval.
     #
     # @param permits [Integer] Number of permits to acquire (default: 1)
-    # @param timeout [Numeric, nil] Number of seconds to wait, or nil to return immediately (default: nil)
+    # @param timeout [Numeric, nil] Number of seconds to wait, or nil to return immediately (default: nil).
+    #   The timeout value will be rounded up to the nearest whole second due to Redis BLPOP limitations.
     # @return [CountingSemaphore::Lease, nil] A lease object if successful, nil otherwise
     # @raise [ArgumentError] if permits is not an integer or is less than one
-    def try_acquire(permits = 1, timeout = nil)
+    def try_acquire(permits = 1, timeout: nil)
       raise ArgumentError, "Permits must be at least 1, got #{permits}" if permits < 1
       if permits > @capacity
         return nil
@@ -254,7 +255,7 @@ module CountingSemaphore
       return nil if available <= 0
 
       # Try to acquire all available permits
-      try_acquire(available, 0.1)
+      try_acquire(available, timeout: 0.1)
     end
 
     # Returns debugging information about the current state of the semaphore.

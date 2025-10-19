@@ -168,7 +168,7 @@ class LocalSemaphoreTest < Minitest::Test
     semaphore = CountingSemaphore::LocalSemaphore.new(1)
 
     # Test that timeout parameter is accepted
-    result = semaphore.with_lease(1, timeout_seconds: 5) do
+    result = semaphore.with_lease(1, timeout: 5) do
       "success"
     end
 
@@ -182,7 +182,7 @@ class LocalSemaphoreTest < Minitest::Test
     semaphore.with_lease(1) do
       # Try to acquire another token with a very short timeout
       assert_raises(CountingSemaphore::LeaseTimeout) do
-        semaphore.with_lease(1, timeout_seconds: 0.1) do
+        semaphore.with_lease(1, timeout: 0.1) do
           "should not reach here"
         end
       end
@@ -197,7 +197,7 @@ class LocalSemaphoreTest < Minitest::Test
     semaphore.with_lease(1) do
       # Try to acquire another token with a very short timeout
 
-      semaphore.with_lease(1, timeout_seconds: 0.1) do
+      semaphore.with_lease(1, timeout: 0.1) do
         "should not reach here"
       end
     rescue CountingSemaphore::LeaseTimeout => e
@@ -469,7 +469,7 @@ class LocalSemaphoreTest < Minitest::Test
 
     lease1 = semaphore.acquire(1)
     start_time = Time.now
-    lease2 = semaphore.try_acquire(1, nil)
+    lease2 = semaphore.try_acquire(1, timeout: nil)
     elapsed_time = Time.now - start_time
 
     assert_nil lease2
@@ -488,7 +488,7 @@ class LocalSemaphoreTest < Minitest::Test
     end
 
     start_time = Time.now
-    lease = semaphore.try_acquire(1, 0.5)
+    lease = semaphore.try_acquire(1, timeout: 0.5)
     elapsed_time = Time.now - start_time
 
     refute_nil lease
@@ -505,7 +505,7 @@ class LocalSemaphoreTest < Minitest::Test
     lease1 = semaphore.acquire(1)
     start_time = Time.now
 
-    lease2 = semaphore.try_acquire(1, 0.2)
+    lease2 = semaphore.try_acquire(1, timeout: 0.2)
     elapsed_time = Time.now - start_time
 
     assert_nil lease2
@@ -644,7 +644,7 @@ class LocalSemaphoreTest < Minitest::Test
 
     threads = 5.times.map do |i|
       Thread.new do
-        if (lease = semaphore.try_acquire(1, 1.0))
+        if (lease = semaphore.try_acquire(1, timeout: 1.0))
           begin
             mutex.synchronize { results << i }
             sleep(0.1)

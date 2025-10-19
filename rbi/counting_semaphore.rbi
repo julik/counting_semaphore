@@ -174,7 +174,7 @@ module CountingSemaphore
     # 
     # _@return_ — A lease object if successful, nil otherwise
     sig { params(permits: Integer, timeout: T.nilable(Numeric)).returns(T.nilable(CountingSemaphore::Lease)) }
-    def try_acquire(permits = 1, timeout = nil); end
+    def try_acquire(permits = 1, timeout: nil); end
 
     # Returns the current number of permits available in this semaphore.
     # 
@@ -195,11 +195,11 @@ module CountingSemaphore
     # 
     # _@param_ `permit_count` — Number of permits to acquire (default: 1)
     # 
-    # _@param_ `timeout_seconds` — Maximum time to wait for lease acquisition (default: 30 seconds)
+    # _@param_ `timeout` — Maximum time in seconds to wait for lease acquisition (default: 30). For Redis-backed semaphores, the timeout value will be rounded up to the nearest whole second due to Redis BLPOP limitations.
     # 
     # _@return_ — The result of the block
-    sig { params(permit_count: Integer, timeout_seconds: Integer, blk: T.proc.params(lease: T.nilable(CountingSemaphore::Lease)).void).returns(T.untyped) }
-    def with_lease(permit_count = 1, timeout_seconds: 30, &blk); end
+    sig { params(permit_count: Integer, timeout: Numeric, blk: T.proc.params(lease: T.nilable(CountingSemaphore::Lease)).void).returns(T.untyped) }
+    def with_lease(permit_count = 1, timeout: 30, &blk); end
 
     # Get the current number of permits currently acquired.
     # Kept for backwards compatibility.
@@ -219,7 +219,7 @@ module CountingSemaphore
   local lease_key = KEYS[1]
   local lease_set_key = KEYS[2]
   local capacity = tonumber(ARGV[1])
-  local token_count = tonumber(ARGV[2])
+  local permit_count = tonumber(ARGV[2])
   local expiration_seconds = tonumber(ARGV[3])
   
   -- Get all active leases from the set and calculate current usage
@@ -228,14 +228,14 @@ module CountingSemaphore
   local valid_leases = {}
   
   for i, key in ipairs(lease_keys) do
-    local tokens = redis.call('GET', key)
-    if tokens then
-      local tokens_from_lease = tonumber(tokens)
-      if tokens_from_lease then
-        current_usage = current_usage + tokens_from_lease
+    local permits = redis.call('GET', key)
+    if permits then
+      local permits_from_lease = tonumber(permits)
+      if permits_from_lease then
+        current_usage = current_usage + permits_from_lease
         table.insert(valid_leases, key)
       else
-        -- Remove lease with invalid token count
+        -- Remove lease with invalid permit count
         redis.call('DEL', key)
         redis.call('SREM', lease_set_key, key)
       end
@@ -247,15 +247,15 @@ module CountingSemaphore
   
   -- Check if we have capacity
   local available = capacity - current_usage
-  if available >= token_count then
-    -- Set lease with TTL (value is just the token count)
-    redis.call('SETEX', lease_key, expiration_seconds, token_count)
+  if available >= permit_count then
+    -- Set lease with TTL (value is just the permit count)
+    redis.call('SETEX', lease_key, expiration_seconds, permit_count)
     -- Add lease key to the set
     redis.call('SADD', lease_set_key, lease_key)
     -- Set TTL on the set (4x the lease TTL to ensure cleanup)
     redis.call('EXPIRE', lease_set_key, expiration_seconds * 4)
     
-    return {1, lease_key, current_usage + token_count}
+    return {1, lease_key, current_usage + permit_count}
   else
     return {0, '', current_usage}
   end
@@ -270,14 +270,14 @@ LUA
   local has_valid_leases = false
   
   for i, lease_key in ipairs(lease_keys) do
-    local tokens = redis.call('GET', lease_key)
-    if tokens then
-      local tokens_from_lease = tonumber(tokens)
-      if tokens_from_lease then
-        current_usage = current_usage + tokens_from_lease
+    local permits = redis.call('GET', lease_key)
+    if permits then
+      local permits_from_lease = tonumber(permits)
+      if permits_from_lease then
+        current_usage = current_usage + permits_from_lease
         has_valid_leases = true
       else
-        -- Remove lease with invalid token count
+        -- Remove lease with invalid permit count
         redis.call('DEL', lease_key)
         redis.call('SREM', lease_set_key, lease_key)
       end
@@ -298,7 +298,7 @@ LUA
   local lease_key = KEYS[1]
   local queue_key = KEYS[2]
   local lease_set_key = KEYS[3]
-  local token_count = tonumber(ARGV[1])
+  local permit_count = tonumber(ARGV[1])
   local max_signals = tonumber(ARGV[2])
   
   -- Remove the lease
@@ -306,8 +306,8 @@ LUA
   -- Remove from the lease set
   redis.call('SREM', lease_set_key, lease_key)
   
-  -- Signal waiting clients about the released tokens
-  redis.call('LPUSH', queue_key, 'tokens:' .. token_count)
+  -- Signal waiting clients about the released permits
+  redis.call('LPUSH', queue_key, 'permits:' .. permit_count)
   
   -- Trim queue to prevent indefinite growth (atomic)
   redis.call('LTRIM', queue_key, 0, max_signals - 1)
@@ -323,7 +323,7 @@ LUA
     # sord omit - no YARD type given for "lease_expiration_seconds:", using untyped
     # Initialize the semaphore with a maximum capacity and required namespace.
     # 
-    # _@param_ `capacity` — Maximum number of concurrent operations allowed
+    # _@param_ `capacity` — Maximum number of concurrent operations allowed (also called permits)
     # 
     # _@param_ `namespace` — Required namespace for Redis keys
     # 
@@ -360,11 +360,11 @@ LUA
     # 
     # _@param_ `permits` — Number of permits to acquire (default: 1)
     # 
-    # _@param_ `timeout` — Number of seconds to wait, or nil to return immediately (default: nil)
+    # _@param_ `timeout` — Number of seconds to wait, or nil to return immediately (default: nil). The timeout value will be rounded up to the nearest whole second due to Redis BLPOP limitations.
     # 
     # _@return_ — A lease object if successful, nil otherwise
     sig { params(permits: Integer, timeout: T.nilable(Numeric)).returns(T.nilable(CountingSemaphore::Lease)) }
-    def try_acquire(permits = 1, timeout = nil); end
+    def try_acquire(permits = 1, timeout: nil); end
 
     # Returns the current number of permits available in this semaphore.
     # 
@@ -379,9 +379,17 @@ LUA
     sig { returns(T.nilable(CountingSemaphore::Lease)) }
     def drain_permits; end
 
-    # sord omit - no YARD return type given, using untyped
-    # Get current usage and active leases for debugging
-    sig { returns(T.untyped) }
+    # Returns debugging information about the current state of the semaphore.
+    # Includes current usage, capacity, available permits, and details about active leases.
+    # 
+    # _@return_ — A hash containing :usage, :capacity, :available, and :active_leases
+    # 
+    # ```ruby
+    # info = semaphore.debug_info
+    # puts "Usage: #{info[:usage]}/#{info[:capacity]}"
+    # info[:active_leases].each { |lease| puts "Lease: #{lease[:key]} - #{lease[:permits]} permits" }
+    # ```
+    sig { returns(T::Hash[T.untyped, T.untyped]) }
     def debug_info; end
 
     # sord warn - Redis wasn't able to be resolved to a constant in this project
@@ -424,16 +432,16 @@ LUA
     sig { params(permit_count: T.untyped, remaining_timeout: T.untyped).returns(T.untyped) }
     def wait_for_permits(permit_count, remaining_timeout); end
 
-    # sord omit - no YARD type given for "token_count", using untyped
+    # sord omit - no YARD type given for "permit_count", using untyped
     # sord omit - no YARD return type given, using untyped
-    sig { params(token_count: T.untyped).returns(T.untyped) }
-    def attempt_lease_acquisition(token_count); end
+    sig { params(permit_count: T.untyped).returns(T.untyped) }
+    def attempt_lease_acquisition(permit_count); end
 
     # sord omit - no YARD type given for "lease_key", using untyped
-    # sord omit - no YARD type given for "token_count", using untyped
+    # sord omit - no YARD type given for "permit_count", using untyped
     # sord omit - no YARD return type given, using untyped
-    sig { params(lease_key: T.untyped, token_count: T.untyped).returns(T.untyped) }
-    def release_lease(lease_key, token_count); end
+    sig { params(lease_key: T.untyped, permit_count: T.untyped).returns(T.untyped) }
+    def release_lease(lease_key, permit_count); end
 
     # sord omit - no YARD return type given, using untyped
     sig { returns(T.untyped) }
@@ -443,28 +451,17 @@ LUA
     sig { returns(T.untyped) }
     def generate_lease_id; end
 
-    # Acquire a lease for the specified number of tokens and execute the block.
+    # Acquire a lease for the specified number of permits and execute the block.
     # Blocks until sufficient resources are available.
+    # Kept for backwards compatibility - wraps acquire/release.
     # 
-    # _@param_ `token_count` — Number of tokens to acquire
+    # _@param_ `permit_count` — Number of permits to acquire (default: 1)
     # 
-    # _@param_ `timeout_seconds` — Maximum time to wait for lease acquisition (default: 30 seconds)
+    # _@param_ `timeout` — Maximum time in seconds to wait for lease acquisition (default: 30). For Redis-backed semaphores, the timeout value will be rounded up to the nearest whole second due to Redis BLPOP limitations.
     # 
     # _@return_ — The result of the block
-    sig { params(token_count: Integer, timeout_seconds: Integer, blk: T.proc.params(lease: T.nilable(CountingSemaphore::Lease)).void).returns(T.untyped) }
-    def with_lease(token_count, timeout_seconds: 30, &blk); end
-
-    # sord omit - no YARD type given for "token_count", using untyped
-    # sord omit - no YARD type given for "timeout_seconds:", using untyped
-    # sord omit - no YARD return type given, using untyped
-    sig { params(token_count: T.untyped, timeout_seconds: T.untyped).returns(T.untyped) }
-    def acquire_lease(token_count, timeout_seconds: 30); end
-
-    # sord omit - no YARD type given for "token_count", using untyped
-    # sord omit - no YARD type given for "remaining_timeout", using untyped
-    # sord omit - no YARD return type given, using untyped
-    sig { params(token_count: T.untyped, remaining_timeout: T.untyped).returns(T.untyped) }
-    def wait_for_tokens(token_count, remaining_timeout); end
+    sig { params(permit_count: Integer, timeout: Numeric, blk: T.proc.params(lease: T.nilable(CountingSemaphore::Lease)).void).returns(T.untyped) }
+    def with_lease(permit_count = 1, timeout: 30, &blk); end
 
     # Get the current number of permits currently acquired.
     # Kept for backwards compatibility.
@@ -476,7 +473,8 @@ LUA
     sig { returns(Integer) }
     attr_reader :capacity
 
-    # Null pool for bare Redis connections that don't need connection pooling
+    # Null pool for bare Redis connections that don't need connection pooling.
+    # Provides a compatible interface with ConnectionPool for bare Redis instances.
     class NullPool
       # sord warn - Redis wasn't able to be resolved to a constant in this project
       # Creates a new NullPool wrapper around a Redis connection.
@@ -492,14 +490,6 @@ LUA
       sig { params(block: T.untyped).returns(T.untyped) }
       def with(&block); end
     end
-
-    # Custom exception for lease acquisition timeouts
-    class LeaseTimeout < StandardError
-      # sord omit - no YARD type given for "token_count", using untyped
-      # sord omit - no YARD type given for "timeout_seconds", using untyped
-      sig { params(token_count: T.untyped, timeout_seconds: T.untyped).void }
-      def initialize(token_count, timeout_seconds); end
-    end
   end
 
   # Module providing backwards-compatible with_lease method
@@ -511,11 +501,11 @@ LUA
     # 
     # _@param_ `permit_count` — Number of permits to acquire (default: 1)
     # 
-    # _@param_ `timeout_seconds` — Maximum time to wait for lease acquisition (default: 30 seconds)
+    # _@param_ `timeout` — Maximum time in seconds to wait for lease acquisition (default: 30). For Redis-backed semaphores, the timeout value will be rounded up to the nearest whole second due to Redis BLPOP limitations.
     # 
     # _@return_ — The result of the block
-    sig { params(permit_count: Integer, timeout_seconds: Integer, blk: T.proc.params(lease: T.nilable(CountingSemaphore::Lease)).void).returns(T.untyped) }
-    def with_lease(permit_count = 1, timeout_seconds: 30, &blk); end
+    sig { params(permit_count: Integer, timeout: Numeric, blk: T.proc.params(lease: T.nilable(CountingSemaphore::Lease)).void).returns(T.untyped) }
+    def with_lease(permit_count = 1, timeout: 30, &blk); end
 
     # Get the current number of permits currently acquired.
     # Kept for backwards compatibility.

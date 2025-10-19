@@ -150,7 +150,7 @@ module CountingSemaphore
     # _@param_ `timeout` — Number of seconds to wait, or nil to return immediately (default: nil)
     # 
     # _@return_ — A lease object if successful, nil otherwise
-    def try_acquire: (?Integer permits, ?Numeric? timeout) -> CountingSemaphore::Lease?
+    def try_acquire: (?Integer permits, ?timeout: Numeric?) -> CountingSemaphore::Lease?
 
     # Returns the current number of permits available in this semaphore.
     # 
@@ -169,10 +169,10 @@ module CountingSemaphore
     # 
     # _@param_ `permit_count` — Number of permits to acquire (default: 1)
     # 
-    # _@param_ `timeout_seconds` — Maximum time to wait for lease acquisition (default: 30 seconds)
+    # _@param_ `timeout` — Maximum time in seconds to wait for lease acquisition (default: 30). For Redis-backed semaphores, the timeout value will be rounded up to the nearest whole second due to Redis BLPOP limitations.
     # 
     # _@return_ — The result of the block
-    def with_lease: (?Integer permit_count, ?timeout_seconds: Integer) ?{ (CountingSemaphore::Lease? lease) -> void } -> untyped
+    def with_lease: (?Integer permit_count, ?timeout: Numeric) ?{ (CountingSemaphore::Lease? lease) -> void } -> untyped
 
     # Get the current number of permits currently acquired.
     # Kept for backwards compatibility.
@@ -198,7 +198,7 @@ module CountingSemaphore
     # sord omit - no YARD type given for "lease_expiration_seconds:", using untyped
     # Initialize the semaphore with a maximum capacity and required namespace.
     # 
-    # _@param_ `capacity` — Maximum number of concurrent operations allowed
+    # _@param_ `capacity` — Maximum number of concurrent operations allowed (also called permits)
     # 
     # _@param_ `namespace` — Required namespace for Redis keys
     # 
@@ -230,10 +230,10 @@ module CountingSemaphore
     # 
     # _@param_ `permits` — Number of permits to acquire (default: 1)
     # 
-    # _@param_ `timeout` — Number of seconds to wait, or nil to return immediately (default: nil)
+    # _@param_ `timeout` — Number of seconds to wait, or nil to return immediately (default: nil). The timeout value will be rounded up to the nearest whole second due to Redis BLPOP limitations.
     # 
     # _@return_ — A lease object if successful, nil otherwise
-    def try_acquire: (?Integer permits, ?Numeric? timeout) -> CountingSemaphore::Lease?
+    def try_acquire: (?Integer permits, ?timeout: Numeric?) -> CountingSemaphore::Lease?
 
     # Returns the current number of permits available in this semaphore.
     # 
@@ -246,9 +246,17 @@ module CountingSemaphore
     # _@return_ — A lease for all available permits, or nil if none available
     def drain_permits: () -> CountingSemaphore::Lease?
 
-    # sord omit - no YARD return type given, using untyped
-    # Get current usage and active leases for debugging
-    def debug_info: () -> untyped
+    # Returns debugging information about the current state of the semaphore.
+    # Includes current usage, capacity, available permits, and details about active leases.
+    # 
+    # _@return_ — A hash containing :usage, :capacity, :available, and :active_leases
+    # 
+    # ```ruby
+    # info = semaphore.debug_info
+    # puts "Usage: #{info[:usage]}/#{info[:capacity]}"
+    # info[:active_leases].each { |lease| puts "Lease: #{lease[:key]} - #{lease[:permits]} permits" }
+    # ```
+    def debug_info: () -> ::Hash[untyped, untyped]
 
     # sord warn - Redis wasn't able to be resolved to a constant in this project
     # sord warn - ConnectionPool wasn't able to be resolved to a constant in this project
@@ -285,14 +293,14 @@ module CountingSemaphore
     # sord omit - no YARD return type given, using untyped
     def wait_for_permits: (untyped permit_count, untyped remaining_timeout) -> untyped
 
-    # sord omit - no YARD type given for "token_count", using untyped
+    # sord omit - no YARD type given for "permit_count", using untyped
     # sord omit - no YARD return type given, using untyped
-    def attempt_lease_acquisition: (untyped token_count) -> untyped
+    def attempt_lease_acquisition: (untyped permit_count) -> untyped
 
     # sord omit - no YARD type given for "lease_key", using untyped
-    # sord omit - no YARD type given for "token_count", using untyped
+    # sord omit - no YARD type given for "permit_count", using untyped
     # sord omit - no YARD return type given, using untyped
-    def release_lease: (untyped lease_key, untyped token_count) -> untyped
+    def release_lease: (untyped lease_key, untyped permit_count) -> untyped
 
     # sord omit - no YARD return type given, using untyped
     def get_current_usage: () -> untyped
@@ -300,25 +308,16 @@ module CountingSemaphore
     # sord omit - no YARD return type given, using untyped
     def generate_lease_id: () -> untyped
 
-    # Acquire a lease for the specified number of tokens and execute the block.
+    # Acquire a lease for the specified number of permits and execute the block.
     # Blocks until sufficient resources are available.
+    # Kept for backwards compatibility - wraps acquire/release.
     # 
-    # _@param_ `token_count` — Number of tokens to acquire
+    # _@param_ `permit_count` — Number of permits to acquire (default: 1)
     # 
-    # _@param_ `timeout_seconds` — Maximum time to wait for lease acquisition (default: 30 seconds)
+    # _@param_ `timeout` — Maximum time in seconds to wait for lease acquisition (default: 30). For Redis-backed semaphores, the timeout value will be rounded up to the nearest whole second due to Redis BLPOP limitations.
     # 
     # _@return_ — The result of the block
-    def with_lease: (Integer token_count, ?timeout_seconds: Integer) ?{ (CountingSemaphore::Lease? lease) -> void } -> untyped
-
-    # sord omit - no YARD type given for "token_count", using untyped
-    # sord omit - no YARD type given for "timeout_seconds:", using untyped
-    # sord omit - no YARD return type given, using untyped
-    def acquire_lease: (untyped token_count, ?timeout_seconds: untyped) -> untyped
-
-    # sord omit - no YARD type given for "token_count", using untyped
-    # sord omit - no YARD type given for "remaining_timeout", using untyped
-    # sord omit - no YARD return type given, using untyped
-    def wait_for_tokens: (untyped token_count, untyped remaining_timeout) -> untyped
+    def with_lease: (?Integer permit_count, ?timeout: Numeric) ?{ (CountingSemaphore::Lease? lease) -> void } -> untyped
 
     # Get the current number of permits currently acquired.
     # Kept for backwards compatibility.
@@ -328,7 +327,8 @@ module CountingSemaphore
 
     attr_reader capacity: Integer
 
-    # Null pool for bare Redis connections that don't need connection pooling
+    # Null pool for bare Redis connections that don't need connection pooling.
+    # Provides a compatible interface with ConnectionPool for bare Redis instances.
     class NullPool
       # sord warn - Redis wasn't able to be resolved to a constant in this project
       # Creates a new NullPool wrapper around a Redis connection.
@@ -342,13 +342,6 @@ module CountingSemaphore
       # _@return_ — The result of the block
       def with: () -> untyped
     end
-
-    # Custom exception for lease acquisition timeouts
-    class LeaseTimeout < StandardError
-      # sord omit - no YARD type given for "token_count", using untyped
-      # sord omit - no YARD type given for "timeout_seconds", using untyped
-      def initialize: (untyped token_count, untyped timeout_seconds) -> void
-    end
   end
 
   # Module providing backwards-compatible with_lease method
@@ -360,10 +353,10 @@ module CountingSemaphore
     # 
     # _@param_ `permit_count` — Number of permits to acquire (default: 1)
     # 
-    # _@param_ `timeout_seconds` — Maximum time to wait for lease acquisition (default: 30 seconds)
+    # _@param_ `timeout` — Maximum time in seconds to wait for lease acquisition (default: 30). For Redis-backed semaphores, the timeout value will be rounded up to the nearest whole second due to Redis BLPOP limitations.
     # 
     # _@return_ — The result of the block
-    def with_lease: (?Integer permit_count, ?timeout_seconds: Integer) ?{ (CountingSemaphore::Lease? lease) -> void } -> untyped
+    def with_lease: (?Integer permit_count, ?timeout: Numeric) ?{ (CountingSemaphore::Lease? lease) -> void } -> untyped
 
     # Get the current number of permits currently acquired.
     # Kept for backwards compatibility.

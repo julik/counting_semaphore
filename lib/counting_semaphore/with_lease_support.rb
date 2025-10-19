@@ -9,13 +9,15 @@ module CountingSemaphore
     # Kept for backwards compatibility - wraps acquire/release.
     #
     # @param permit_count [Integer] Number of permits to acquire (default: 1)
-    # @param timeout_seconds [Integer] Maximum time to wait for lease acquisition (default: 30 seconds)
+    # @param timeout [Numeric] Maximum time in seconds to wait for lease acquisition (default: 30).
+    #   For Redis-backed semaphores, the timeout value will be rounded up to the nearest whole second
+    #   due to Redis BLPOP limitations.
     # @yield [lease] The block to execute while holding the lease
     # @yieldparam lease [CountingSemaphore::Lease, nil] The lease object (nil if permit_count is 0)
     # @return The result of the block
     # @raise [ArgumentError] if permit_count is negative or exceeds the semaphore capacity
     # @raise [CountingSemaphore::LeaseTimeout] if lease cannot be acquired within timeout
-    def with_lease(permit_count = 1, timeout_seconds: 30)
+    def with_lease(permit_count = 1, timeout: 30)
       permit_count = permit_count.to_i
       raise ArgumentError, "Permit count must be non-negative, got #{permit_count}" if permit_count < 0
       if permit_count > capacity
@@ -31,12 +33,12 @@ module CountingSemaphore
 
       loop do
         elapsed_time = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
-        if elapsed_time >= timeout_seconds
-          raise CountingSemaphore::LeaseTimeout.new(permit_count, timeout_seconds, self)
+        if elapsed_time >= timeout
+          raise CountingSemaphore::LeaseTimeout.new(permit_count, timeout, self)
         end
 
-        remaining_timeout = timeout_seconds - elapsed_time
-        lease = try_acquire(permit_count, remaining_timeout)
+        remaining_timeout = timeout - elapsed_time
+        lease = try_acquire(permit_count, timeout: remaining_timeout)
         break if lease
       end
 

@@ -153,7 +153,7 @@ class RedisSemaphoreTest < Minitest::Test
         results << "client2_attempting_5_tokens"
       end
 
-      semaphore2.with_lease(5, timeout_seconds: 2) do
+      semaphore2.with_lease(5, timeout: 2) do
         results << "client2_acquired_5_tokens"
         sleep 0.05
         results << "client2_releasing_5_tokens"
@@ -259,7 +259,7 @@ class RedisSemaphoreTest < Minitest::Test
       )
 
       begin
-        semaphore2.with_lease(1, timeout_seconds: 0.5) do
+        semaphore2.with_lease(1, timeout: 0.5) do
           # This should not execute
         end
       rescue CountingSemaphore::LeaseTimeout
@@ -321,7 +321,7 @@ class RedisSemaphoreTest < Minitest::Test
       )
 
       begin
-        semaphore2.with_lease(1, timeout_seconds: 0.5) do
+        semaphore2.with_lease(1, timeout: 0.5) do
           # This should not execute
         end
       rescue CountingSemaphore::LeaseTimeout => e
@@ -396,7 +396,7 @@ class RedisSemaphoreTest < Minitest::Test
       )
 
       begin
-        semaphore2.with_lease(timeout_seconds: 0.5) do  # Uses default token count of 1
+        semaphore2.with_lease(timeout: 0.5) do  # Uses default token count of 1
           # This should not execute
         end
       rescue CountingSemaphore::LeaseTimeout
@@ -657,7 +657,7 @@ class RedisSemaphoreTest < Minitest::Test
     lease1 = semaphore.acquire(1)
     start_time = Time.now
 
-    lease2 = semaphore.try_acquire(1, nil)
+    lease2 = semaphore.try_acquire(1, timeout: nil)
     elapsed_time = Time.now - start_time
 
     assert_nil lease2
@@ -685,7 +685,7 @@ class RedisSemaphoreTest < Minitest::Test
     thread2 = Thread.new do
       semaphore2 = CountingSemaphore::RedisSemaphore.new(1, namespace, redis: Redis.new(db: REDIS_DB))
       start_time = Time.now
-      lease2 = semaphore2.try_acquire(1, 1.0)
+      lease2 = semaphore2.try_acquire(1, timeout: 1.0)
       elapsed_time = Time.now - start_time
       semaphore2.release(lease2) if lease2
     end
@@ -704,7 +704,7 @@ class RedisSemaphoreTest < Minitest::Test
 
     lease1 = semaphore.acquire(1)
     start_time = Time.now
-    lease2 = semaphore.try_acquire(1, 0.3)
+    lease2 = semaphore.try_acquire(1, timeout: 0.3)
     elapsed_time = Time.now - start_time
 
     assert_nil lease2
@@ -853,7 +853,7 @@ class RedisSemaphoreTest < Minitest::Test
 
     threads = 5.times.map do |i|
       Thread.new do
-        if (lease = semaphore.try_acquire(1, 1.0))
+        if (lease = semaphore.try_acquire(1, timeout: 1.0))
           begin
             mutex.synchronize { results << i }
             sleep(0.1)
