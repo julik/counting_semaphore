@@ -9,9 +9,7 @@ module CountingSemaphore
     # Kept for backwards compatibility - wraps acquire/release.
     #
     # @param permit_count [Integer] Number of permits to acquire (default: 1)
-    # @param timeout [Numeric] Maximum time in seconds to wait for lease acquisition (default: 30).
-    #   For Redis-backed semaphores, the timeout value will be rounded up to the nearest whole second
-    #   due to Redis BLPOP limitations.
+    # @param timeout [Numeric] Maximum time in seconds to wait for lease acquisition (default: 30)
     # @yield [lease] The block to execute while holding the lease
     # @yieldparam lease [CountingSemaphore::Lease, nil] The lease object (nil if permit_count is 0)
     # @return The result of the block

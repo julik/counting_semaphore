@@ -1,6 +1,9 @@
+# frozen_string_literal: true
+
 require "test_helper"
 require "counting_semaphore"
 require "redis"
+require "connection_pool"
 
 class RedisSemaphoreTest < Minitest::Test
   REDIS_DB = 2
@@ -98,6 +101,57 @@ class RedisSemaphoreTest < Minitest::Test
     end
 
     assert_equal "success", result
+  end
+
+  # A waiting semaphore must not squat on a connection from the pool it was given - the
+  # pool is usually shared with the rest of the application, and a connection occupied by
+  # a waiter is a connection no other part of the application can use.
+  def test_waiting_for_permits_does_not_hold_on_to_a_pooled_redis_connection
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    pool = ConnectionPool.new(size: 1, timeout: 1) { Redis.new(db: REDIS_DB) }
+    semaphore = CountingSemaphore::RedisSemaphore.new(1, namespace, redis: pool, lease_expiration_seconds: 10)
+
+    lease = semaphore.acquire(1)
+    waiter = Thread.new { semaphore.try_acquire(1, timeout: 2.5) }
+
+    # Let the waiter enter its wait
+    sleep 0.3
+
+    # The pool only holds one connection. If the waiter occupies it for the duration of
+    # its wait these checkouts raise ConnectionPool::TimeoutError.
+    pings = 0
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
+    while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+      pool.with { |redis| redis.ping }
+      pings += 1
+    end
+
+    assert_operator pings, :>, 50, "Expected the shared pool to stay usable while the semaphore waits"
+    assert_nil waiter.value, "Expected the waiter to time out while the only permit is held"
+
+    semaphore.release(lease)
+  end
+
+  # Polling for the release signal must stay responsive - a waiter has to wake up on the
+  # signal itself, not sit out its whole timeout or wait for the lease to expire.
+  def test_waiter_wakes_up_promptly_once_permits_get_released
+    namespace = "test_semaphore_#{SecureRandom.uuid}"
+    semaphore = CountingSemaphore::RedisSemaphore.new(1, namespace, redis: Redis.new(db: REDIS_DB), lease_expiration_seconds: 30)
+    lease = semaphore.acquire(1)
+
+    waiter_semaphore = CountingSemaphore::RedisSemaphore.new(1, namespace, redis: Redis.new(db: REDIS_DB), lease_expiration_seconds: 30)
+    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    waiter = Thread.new { waiter_semaphore.try_acquire(1, timeout: 10) }
+
+    sleep 0.3
+    semaphore.release(lease)
+
+    acquired_lease = waiter.value
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+    refute_nil acquired_lease, "Expected the waiter to acquire the released permit"
+    assert_operator elapsed, :<, 1.5, "Expected the waiter to wake up on the release signal"
+    waiter_semaphore.release(acquired_lease)
   end
 
   test_with_timeout "two clients with signaling using threads and condition variables" do
