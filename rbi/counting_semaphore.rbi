@@ -3,7 +3,7 @@
 # When capacity is exceeded, operations block until resources become available.
 # API compatible with concurrent-ruby's Semaphore class.
 module CountingSemaphore
-  VERSION = T.let("0.1.0", T.untyped)
+  VERSION = T.let("0.2.0", T.untyped)
 
   # Represents an acquired lease on a semaphore.
   # Must be passed to release() to return the permits.
@@ -20,9 +20,9 @@ module CountingSemaphore
     sig { returns(Object) }
     attr_accessor :semaphore
 
-    # Returns the value of attribute lease_id
+    # Returns the value of attribute id
     sig { returns(Object) }
-    attr_accessor :lease_id
+    attr_accessor :id
 
     # Returns the value of attribute permits
     sig { returns(Object) }
@@ -215,6 +215,7 @@ module CountingSemaphore
   class RedisSemaphore
     include CountingSemaphore::WithLeaseSupport
     LEASE_EXPIRATION_SECONDS = T.let(5, T.untyped)
+    SIGNAL_POLL_INTERVAL_SECONDS = T.let(0.05, T.untyped)
     GET_LEASE_SCRIPT = T.let(<<~LUA, T.untyped)
   local lease_key = KEYS[1]
   local lease_set_key = KEYS[2]
@@ -423,6 +424,33 @@ LUA
     # sord omit - no YARD return type given, using untyped
     sig { params(permit_count: T.untyped, remaining_timeout: T.untyped).returns(T.untyped) }
     def wait_for_permits(permit_count, remaining_timeout); end
+
+    # Waits for a permit release signal for at most the given number of seconds.
+    # 
+    # The signal queue is polled with LPOP and the waiting is done by sleeping, rather
+    # than by handing the waiting to Redis via BLPOP. A blocking Redis command occupies
+    # the connection it runs on for its entire duration, and that connection comes from
+    # the pool handed to us by the caller - a pool the application normally shares with
+    # all of its other Redis work. A BLPOP lasting seconds makes every waiter squat on a
+    # pool connection for the whole of its wait, and once there are as many waiters as
+    # there are connections all unrelated Redis work starves and starts raising
+    # ConnectionPool::TimeoutError. Note that slicing the BLPOP into short blocking calls
+    # does not help: ConnectionPool hands a returned connection back to whoever asks
+    # first, so a waiter that immediately re-checks out barges past callers already
+    # queueing for it, and the connection stays occupied all the same.
+    # 
+    # Polling instead means a waiter holds a connection for one round trip per interval
+    # and spends the rest of its wait holding nothing at all.
+    # 
+    # No signal is lost in between the polls: signals are LPUSHed onto a Redis list and
+    # stay there until popped, so a signal published while we sleep gets picked up by the
+    # poll that follows.
+    # 
+    # _@param_ `timeout` — maximum number of seconds to wait for a signal
+    # 
+    # _@return_ — the signal if one arrived, nil if the wait timed out
+    sig { params(timeout: Numeric).returns(T.nilable(String)) }
+    def await_signal(timeout); end
 
     # sord omit - no YARD type given for "token_count", using untyped
     # sord omit - no YARD return type given, using untyped

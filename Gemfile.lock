@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    counting_semaphore (0.1.0)
+    counting_semaphore (0.2.0)
 
 GEM
   remote: https://rubygems.org/

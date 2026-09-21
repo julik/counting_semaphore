@@ -13,6 +13,11 @@ module CountingSemaphore
 
     LEASE_EXPIRATION_SECONDS = 5
 
+    # How long a waiter sleeps in between checks of the release signal queue. The sleep
+    # happens with no Redis connection checked out, so this also sets how promptly a
+    # waiter notices released permits. See #await_signal.
+    SIGNAL_POLL_INTERVAL_SECONDS = 0.05
+
     # Lua script for atomic lease acquisition
     # Returns: [success, lease_key, current_usage]
     # success: 1 if lease was acquired, 0 if no capacity
@@ -375,21 +380,20 @@ module CountingSemaphore
         timeout = @lease_expiration_seconds + 2
         @logger.debug { "Unable to acquire #{permit_count} permits, waiting for signals (indefinite)" }
       else
-        # Ensure minimum timeout to prevent infinite blocking
-        # BLPOP with timeout 0 blocks forever, so we need at least a small positive timeout
+        # Waiting for less than one poll interval is not worth a round trip
         minimum_timeout = 0.1
         if remaining_timeout <= minimum_timeout
           @logger.debug { "Remaining timeout (#{remaining_timeout}s) too small, not waiting" }
           return nil
         end
 
-        # Block with timeout (longer than lease expiration to handle stale leases)
-        # But don't exceed the remaining timeout
+        # Wait with a timeout longer than lease expiration to handle stale leases,
+        # but don't exceed the remaining timeout
         timeout = [@lease_expiration_seconds + 2, remaining_timeout].min
         @logger.debug { "Unable to acquire #{permit_count} permits, waiting for signals (timeout: #{timeout}s)" }
       end
 
-      with_redis { |redis| redis.blpop("#{@namespace}:waiting_queue", timeout: timeout.to_f) }
+      await_signal(timeout)
 
       # Try to acquire after any signal or timeout
       lease_key = attempt_lease_acquisition(permit_count)
@@ -400,6 +404,44 @@ module CountingSemaphore
       # If still can't acquire, return nil to continue the loop
       @logger.debug { "Still unable to acquire #{permit_count} permits after signal/timeout, continuing to wait" }
       nil
+    end
+
+    # Waits for a permit release signal for at most the given number of seconds.
+    #
+    # The signal queue is polled with LPOP and the waiting is done by sleeping, rather
+    # than by handing the waiting to Redis via BLPOP. A blocking Redis command occupies
+    # the connection it runs on for its entire duration, and that connection comes from
+    # the pool handed to us by the caller - a pool the application normally shares with
+    # all of its other Redis work. A BLPOP lasting seconds makes every waiter squat on a
+    # pool connection for the whole of its wait, and once there are as many waiters as
+    # there are connections all unrelated Redis work starves and starts raising
+    # ConnectionPool::TimeoutError. Note that slicing the BLPOP into short blocking calls
+    # does not help: ConnectionPool hands a returned connection back to whoever asks
+    # first, so a waiter that immediately re-checks out barges past callers already
+    # queueing for it, and the connection stays occupied all the same.
+    #
+    # Polling instead means a waiter holds a connection for one round trip per interval
+    # and spends the rest of its wait holding nothing at all.
+    #
+    # No signal is lost in between the polls: signals are LPUSHed onto a Redis list and
+    # stay there until popped, so a signal published while we sleep gets picked up by the
+    # poll that follows.
+    #
+    # @param timeout [Numeric] maximum number of seconds to wait for a signal
+    # @return [String, nil] the signal if one arrived, nil if the wait timed out
+    def await_signal(timeout)
+      queue_key = "#{@namespace}:waiting_queue"
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout.to_f
+
+      loop do
+        signal = with_redis { |redis| redis.lpop(queue_key) }
+        return signal if signal
+
+        remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        return nil if remaining <= 0
+
+        sleep [remaining, SIGNAL_POLL_INTERVAL_SECONDS].min
+      end
     end
 
     def attempt_lease_acquisition(permit_count)
