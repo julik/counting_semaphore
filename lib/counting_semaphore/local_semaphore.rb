@@ -18,7 +18,7 @@ module CountingSemaphore
     # @param logger [Logger] the logger
     # @raise [ArgumentError] if capacity is not positive
     def initialize(capacity, logger: CountingSemaphore::NullLogger)
-      raise ArgumentError, "Capacity must be positive, got #{capacity}" unless capacity > 0
+      raise ArgumentError, "Capacity must be positive, got #{capacity}" unless capacity >= 1
       @capacity = capacity.to_i
       @acquired = 0
       @mutex = Mutex.new
@@ -92,7 +92,7 @@ module CountingSemaphore
     # @param timeout [Numeric, nil] Number of seconds to wait, or nil to return immediately (default: nil)
     # @return [CountingSemaphore::Lease, nil] A lease object if successful, nil otherwise
     # @raise [ArgumentError] if permits is not an integer or is less than one
-    def try_acquire(permits = 1, timeout = nil)
+    def try_acquire(permits = 1, timeout: nil)
       permits = permits.to_i
       raise ArgumentError, "Permits must be at least 1, got #{permits}" if permits < 1
       if permits > @capacity
